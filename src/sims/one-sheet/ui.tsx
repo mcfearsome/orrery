@@ -483,7 +483,12 @@ export function OneSheetPanel() {
   const [captureId] = useState(() => new URLSearchParams(location.search).get('capture'))
   const [bus] = useState<CaptureBus>(() => ({ time: 0, dt: 0, pending: false, dirty: false }))
   const [preset, setPreset] = useState<string>(() => (captureId && captureId in PRESETS ? captureId : 'drain'))
-  const [cfg, setCfg] = useState<OneSheetConfig>(() => OneSheetConfig.parse(PRESETS[preset] ?? {}))
+  const [cfg, setCfg] = useState<OneSheetConfig>(() => {
+    // capture mode may override numeric fields through the URL: ?capture=cosmic&expandRate=0.015
+    const over: Record<string, number> = {}
+    if (captureId) for (const [k, v] of new URLSearchParams(location.search)) if (k !== 'capture' && Number.isFinite(Number(v))) over[k] = Number(v)
+    return OneSheetConfig.parse({ ...(PRESETS[preset] ?? {}), ...over })
+  })
   const [status, setStatus] = useState('')
   const [slice, setSlice] = useState(false)
   const [sliceY, setSliceY] = useState(0)
