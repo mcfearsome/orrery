@@ -28,7 +28,9 @@ export function CosmologyPanel() {
   // load data once
   useEffect(() => {
     let alive = true
-    api.loadData(undefined, true).then(async (r) => {
+    // A host page may relocate the data: <meta name="orrery:data-base"> and <meta name="orrery:chol-file">.
+    const meta = (n: string) => document.querySelector<HTMLMetaElement>(`meta[name="${n}"]`)?.content || undefined
+    api.loadData(meta('orrery:data-base'), true, meta('orrery:chol-file')).then(async (r) => {
       if (!alive) return
       const s = await api.sampleSummary()
       if (!alive || !s) return

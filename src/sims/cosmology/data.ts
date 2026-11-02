@@ -25,12 +25,15 @@ export function sampleFromJson(j: SNEJson, chol: ArrayBuffer | null): SNSample {
   }
 }
 
-/** Fetch the Pantheon+ files served from data/pantheon_plus (Vite publicDir = data); path is relative to the page. */
-export async function fetchPantheonPlus(base = 'pantheon_plus', withCovariance = true): Promise<SNSample> {
+/**
+ * Fetch the Pantheon+ files served from data/pantheon_plus (Vite publicDir = data); paths are relative to the page.
+ * cholFile lets a host that only serves certain extensions rename the binary (see ui.tsx meta tags).
+ */
+export async function fetchPantheonPlus(base = 'pantheon_plus', withCovariance = true, cholFile = 'chol_lower.f32'): Promise<SNSample> {
   const [j, chol] = await Promise.all([
     fetch(`${base}/sne.json`).then((r) => { if (!r.ok) throw new Error(`sne.json: ${r.status}`); return r.json() as Promise<SNEJson> }),
     withCovariance
-      ? fetch(`${base}/chol_lower.f32`).then((r) => { if (!r.ok) throw new Error(`chol_lower.f32: ${r.status}`); return r.arrayBuffer() })
+      ? fetch(`${base}/${cholFile}`).then((r) => { if (!r.ok) throw new Error(`${cholFile}: ${r.status}`); return r.arrayBuffer() })
       : Promise.resolve(null),
   ])
   return sampleFromJson(j, chol)

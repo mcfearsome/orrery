@@ -55,8 +55,8 @@ function zGrid(): number[] {
 }
 
 const api = {
-  async loadData(base?: string, withCovariance = true): Promise<{ n: number; hasCovariance: boolean }> {
-    sample = await fetchPantheonPlus(base, withCovariance)
+  async loadData(base?: string, withCovariance = true, cholFile?: string): Promise<{ n: number; hasCovariance: boolean }> {
+    sample = await fetchPantheonPlus(base, withCovariance, cholFile)
     return { n: sample.z.length, hasCovariance: !!sample.cholLower }
   },
 
