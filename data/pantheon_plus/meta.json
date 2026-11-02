@@ -1,0 +1,16 @@
+{
+  "source": "https://github.com/PantheonPlusSH0ES/DataRelease (Pantheon+_Data/4_DISTANCES_AND_COVAR)",
+  "files": {
+    "dat": "Pantheon%2BSH0ES.dat",
+    "cov": "Pantheon%2BSH0ES_STAT%2BSYS.cov"
+  },
+  "zMin": 0.01,
+  "nTotal": 1701,
+  "nKept": 1590,
+  "cholLowerPackedLength": 1264845,
+  "sha256": {
+    "dat": "1cb0fc379ef066afdc2ffd1857681cc478024570d8a3eba284fb645775198cf8",
+    "cov": "abf806d966485e64afdb359c87bffc0ecc00d05eff0a31ced66f247385df0fdc"
+  },
+  "preparedAt": "2026-11-02T00:52:08.734Z"
+}
