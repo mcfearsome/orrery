@@ -148,7 +148,7 @@ export interface LeakHistory {
 }
 
 /** Integrate the leak ODE with RK4 in x = ln a from z = BH_HISTORY_Z_MAX to today. */
-export function integrateLeak(p: LeakParams, steps = 3000, hist: BHHistory = SFR_PROXY_HISTORY): LeakHistory {
+export function integrateLeak(p: LeakParams, steps = 1000, hist: BHHistory = SFR_PROXY_HISTORY): LeakHistory {
   const xMin = -Math.log(1 + BH_HISTORY_Z_MAX)
   const h = -xMin / steps
   const x = new Float64Array(steps + 1)
@@ -183,7 +183,7 @@ export function leakOmegaAt(hist: LeakHistory, z: number): number {
 }
 
 /** E(z) for the leak model (flat; E(0) floats with Ω_leak(0)). */
-export function leakE(p: LeakModelParams, hist = integrateLeak(p.leak, 3000, bhHistory(p.bhHistory))): Expansion {
+export function leakE(p: LeakModelParams, hist = integrateLeak(p.leak, 1000, bhHistory(p.bhHistory))): Expansion {
   return (z) => {
     const a1 = 1 + z
     return Math.sqrt(p.Or * a1 ** 4 + p.Om * a1 ** 3 + leakOmegaAt(hist, z))
@@ -270,6 +270,8 @@ export interface SNSample {
   muErr: Float64Array
   /** packed row-major lower-triangular Cholesky factor of the covariance, or null for diagonal-only */
   cholLower: Float32Array | null
+  /** cached L⁻¹·1 (filled on first use) */
+  cholOnes?: Float64Array
 }
 
 /** Solve L y = b for packed lower-triangular L (row-major, row i has i+1 entries). */
@@ -312,7 +314,7 @@ export function chi2Marginalised(sample: SNSample, muModel: Float64Array, useFul
   const deltaMDiag = B / Cc
   if (!useFull || !sample.cholLower) return { chi2: chi2Diag, deltaM: deltaMDiag, n, chi2Diag, deltaMDiag }
   const y = forwardSubstitute(sample.cholLower, r)
-  const u = forwardSubstitute(sample.cholLower, new Float64Array(n).fill(1))
+  const u = sample.cholOnes ?? (sample.cholOnes = forwardSubstitute(sample.cholLower, new Float64Array(n).fill(1)))
   let a = 0, b = 0, c = 0
   for (let i = 0; i < n; i++) {
     a += y[i] * y[i]
@@ -440,7 +442,7 @@ export function zDrag(omegaB: number, omegaM: number): number {
  * c_s = c / sqrt(3 (1 + R_b)),  R_b = 3 ω_b a / (4 ω_γ).
  * Simpson in ln a from a = 1e-8. E(z) must include radiation for this to be right.
  */
-export function soundHorizonMpc(E: Expansion, H0: number, omegaB: number, z: number, steps = 4000): number {
+export function soundHorizonMpc(E: Expansion, H0: number, omegaB: number, z: number, steps = 1000): number {
   const xMin = Math.log(1e-8), xMax = -Math.log(1 + z)
   const h = (xMax - xMin) / steps
   const f = (x: number) => {
@@ -455,7 +457,7 @@ export function soundHorizonMpc(E: Expansion, H0: number, omegaB: number, z: num
 }
 
 /** Comoving distance in Mpc to any z, including beyond the distance table (Simpson in ln(1+z)). */
-export function comovingDistanceMpc(E: Expansion, H0: number, z: number, steps = 4000): number {
+export function comovingDistanceMpc(E: Expansion, H0: number, z: number, steps = 1000): number {
   const uMax = Math.log(1 + z)
   const h = uMax / steps
   let s = 0
@@ -505,9 +507,9 @@ export interface BAOPoint {
 
 export interface BAOPrediction { z: number; DM: number; DH: number; DV: number }
 
-/** Model BAO observables at z, divided by r_d (Mpc). */
-export function baoPredict(E: Expansion, H0: number, rd: number, z: number): BAOPrediction {
-  const DM = comovingDistanceMpc(E, H0, z, 2000)
+/** Model BAO observables at z, divided by r_d (Mpc). Uses the distance table when it covers z. */
+export function baoPredict(E: Expansion, H0: number, rd: number, z: number, table?: DistanceTable): BAOPrediction {
+  const DM = table && z < table.zMax ? comovingDistanceDimensionless(table, z) * (C_KM_S / H0) : comovingDistanceMpc(E, H0, z, 2000)
   const DH = C_KM_S / (H0 * E(z))
   const DV = Math.cbrt(z * DM * DM * DH)
   return { z, DM: DM / rd, DH: DH / rd, DV: DV / rd }

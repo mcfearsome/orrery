@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import * as Comlink from 'comlink'
 import { fetchPantheonPlus } from './data'
+import { EnsembleSampler, histogram, mulberry32, summarise, type ParamSummary } from './mcmc'
 import { bhHistory } from './model'
 import {
   baoChi2,
@@ -21,6 +22,7 @@ import {
   omegaRadiation,
   type BAOPrediction,
   type Chi2Result,
+  type DistanceTable,
   type EarlyUniverse,
   type Expansion,
   type SNSample,
@@ -29,6 +31,29 @@ import { DESI_DR2_BAO, PLANCK18_DISTANCE_PRIORS as P18 } from './priors'
 import { CosmologyConfig, FitBounds, LCDMParams, LeakModelParams, type LeakParams } from './schema'
 
 let sample: SNSample | null = null
+
+interface McmcState { sampler: EnsembleSampler; names: string[]; freeBeta: boolean; cfg: CosmologyConfig }
+let mcmc: McmcState | null = null
+
+export interface McmcProgress {
+  steps: number
+  nWalkers: number
+  acceptance: number
+  evaluations: number
+  bestChi2: number
+  summaries: Record<string, ParamSummary>
+}
+
+function mcmcSummary(m: McmcState): McmcProgress {
+  const steps = m.sampler.chain.length
+  const burn = Math.floor(steps * 0.3)
+  const flat = m.sampler.flat(burn)
+  const summaries: Record<string, ParamSummary> = {}
+  m.names.forEach((n, d) => { summaries[n] = summarise(flat, m.sampler.chain.slice(burn), d) })
+  let best = -Infinity
+  for (const row of m.sampler.chainLogProb) for (const v of row) if (v > best) best = v
+  return { steps, nWalkers: m.sampler.nWalkers, acceptance: m.sampler.acceptanceRate, evaluations: m.sampler.proposed, bestChi2: -2 * best, summaries }
+}
 
 export interface Curve { z: number[]; mu: number[] }
 
@@ -75,10 +100,10 @@ export interface PriorScore {
 }
 
 /** CMB + BAO scores for one expansion history. omegaM is the physical matter density of the model. */
-function scorePriors(E: Expansion, H0: number, omegaM: number, omegaB: number): PriorScore {
+function scorePriors(E: Expansion, H0: number, omegaM: number, omegaB: number, table?: DistanceTable): PriorScore {
   const early = earlyUniverse(E, H0, omegaM, omegaB)
   const chi2CMB = chi2Gaussian2(early.R - P18.R, P18.Rerr, early.lA - P18.lA, P18.lAerr, P18.rho)
-  const bao = DESI_DR2_BAO.map((p) => baoPredict(E, H0, early.rd, p.z))
+  const bao = DESI_DR2_BAO.map((p) => baoPredict(E, H0, early.rd, p.z, table))
   return { early, chi2CMB, chi2BAO: baoChi2(DESI_DR2_BAO, bao), bao }
 }
 
@@ -100,15 +125,16 @@ function totalWithPriors(cfg: CosmologyConfig, chi2SN: number, ps: PriorScore): 
 function scoreLcdm(cfg: CosmologyConfig, s: SNSample) {
   const t = lcdmDistanceTable(cfg.lcdm)
   const sn = chi2Marginalised(s, modelMu(t, s), cfg.fullCovariance)
-  const ps = scorePriors(lcdmE(cfg.lcdm), cfg.lcdm.H0, omegaMOf(cfg.lcdm.Om, cfg.lcdm.H0), cfg.omegaB)
+  const ps = scorePriors(lcdmE(cfg.lcdm), cfg.lcdm.H0, omegaMOf(cfg.lcdm.Om, cfg.lcdm.H0), cfg.omegaB, t)
   return { sn, ps, total: totalWithPriors(cfg, sn.chi2, ps) }
 }
 
 function scoreLeak(cfg: CosmologyConfig, s: SNSample) {
-  const hist = integrateLeak(cfg.leak.leak, 3000, bhHistory(cfg.leak.bhHistory))
+  const hist = integrateLeak(cfg.leak.leak, 1000, bhHistory(cfg.leak.bhHistory))
   const E = leakE(cfg.leak, hist)
-  const sn = chi2Marginalised(s, modelMu(leakDistanceTable(cfg.leak, 2.6, hist), s), cfg.fullCovariance)
-  const ps = scorePriors(E, cfg.leak.H0, omegaMOf(cfg.leak.Om, cfg.leak.H0), cfg.omegaB)
+  const t = leakDistanceTable(cfg.leak, 2.6, hist)
+  const sn = chi2Marginalised(s, modelMu(t, s), cfg.fullCovariance)
+  const ps = scorePriors(E, cfg.leak.H0, omegaMOf(cfg.leak.Om, cfg.leak.H0), cfg.omegaB, t)
   return { sn, ps, total: totalWithPriors(cfg, sn.chi2, ps), hist, E }
 }
 
@@ -134,7 +160,7 @@ const api = {
     const cfg = withRadiation(CosmologyConfig.parse(rawConfig))
     const tL = lcdmDistanceTable(cfg.lcdm)
     const bh = bhHistory(cfg.leak.bhHistory)
-    const hist = integrateLeak(cfg.leak.leak, 3000, bh)
+    const hist = integrateLeak(cfg.leak.leak, 1000, bh)
     const E = leakE(cfg.leak, hist)
     const tK = leakDistanceTable(cfg.leak, 2.6, hist)
     const zs = zGrid()
@@ -146,8 +172,8 @@ const api = {
     const chi2Leak = chi2Marginalised(sample, leakAtData, cfg.fullCovariance)
     const E0 = E(0)
     const EL = lcdmE(cfg.lcdm)
-    const priorsLcdm = scorePriors(EL, cfg.lcdm.H0, omegaMOf(cfg.lcdm.Om, cfg.lcdm.H0), cfg.omegaB)
-    const priorsLeak = scorePriors(E, cfg.leak.H0, omegaMOf(cfg.leak.Om, cfg.leak.H0), cfg.omegaB)
+    const priorsLcdm = scorePriors(EL, cfg.lcdm.H0, omegaMOf(cfg.lcdm.Om, cfg.lcdm.H0), cfg.omegaB, tL)
+    const priorsLeak = scorePriors(E, cfg.leak.H0, omegaMOf(cfg.leak.Om, cfg.leak.H0), cfg.omegaB, tK)
     const baoGrid: number[] = []
     for (let z = 0.1; z <= 2.5001; z += 0.05) baoGrid.push(Number(z.toFixed(3)))
     const curve = (Ex: Expansion, H0: number, rd: number) => {
@@ -207,6 +233,51 @@ const api = {
     })
     return { alpha: r.x[0], beta: r.x[1], gamma: r.x[2], Om: withOm ? r.x[3] : cfg.leak.Om, chi2: r.f, iterations: r.iterations, evaluations: r.evaluations, converged: r.converged }
   },
+
+  // ---- MCMC: posterior over the leak parameters, advanced in chunks so the UI can stop it ----
+  mcmcStart(rawConfig: unknown, opts: { nWalkers?: number; freeBeta?: boolean; seed?: number; spread?: number } = {}) {
+    if (!sample) throw new Error('data not loaded')
+    const cfg = withRadiation(CosmologyConfig.parse(rawConfig))
+    const s = sample
+    const freeBeta = opts.freeBeta ?? true
+    const names = freeBeta ? ['alpha', 'beta', 'gamma', 'Om'] : ['alpha', 'gamma', 'Om']
+    const unpack = (v: number[]) => (freeBeta ? v : [v[0], 0, v[1], v[2]])
+    const inBounds = (x: number[]) => x[0] > 0 && x[0] <= 5 && x[1] >= -4 && x[1] <= 8 && x[2] >= -1 && x[2] <= 5 && x[3] >= 0.05 && x[3] <= 0.9
+    const logProb = (v: number[]) => {
+      const x = unpack(v)
+      if (!inBounds(x)) return -Infinity
+      const leak = LeakModelParams.parse({ ...cfg.leak, Om: x[3], leak: { alpha: x[0], beta: x[1], gamma: x[2] } })
+      return -0.5 * scoreLeak({ ...cfg, leak }, s).total
+    }
+    const lp = cfg.leak.leak
+    const start = freeBeta ? [lp.alpha, lp.beta, lp.gamma, cfg.leak.Om] : [lp.alpha, lp.gamma, cfg.leak.Om]
+    const nWalkers = Math.max(2 * names.length, opts.nWalkers ?? 32)
+    const rng = mulberry32((opts.seed ?? 42) + 1)
+    const spread = opts.spread ?? 0.05
+    const x0 = Array.from({ length: nWalkers }, () => start.map((v) => v * (1 + spread * (rng() - 0.5)) + (v === 0 ? spread * (rng() - 0.5) : 0)))
+    mcmc = { sampler: new EnsembleSampler(logProb, x0, { nWalkers, seed: opts.seed ?? 42 }), names, freeBeta, cfg }
+    return { names, nWalkers }
+  },
+
+  /** Advance the ensemble by n steps; returns progress and running summaries (burn = 30% of steps so far). */
+  mcmcStep(n: number): McmcProgress {
+    if (!mcmc) throw new Error('mcmc not started')
+    mcmc.sampler.step(n)
+    return mcmcSummary(mcmc)
+  },
+
+  /** Thinned samples for plotting: parameter columns, histograms, and 2-D points for two chosen dims. */
+  mcmcSamples(burnFraction = 0.3, maxPoints = 4000): { names: string[]; points: number[][]; hist: { name: string; edges: number[]; counts: number[] }[] } {
+    if (!mcmc) throw new Error('mcmc not started')
+    const burn = Math.floor(mcmc.sampler.chain.length * burnFraction)
+    const flat = mcmc.sampler.flat(burn)
+    const thin = Math.max(1, Math.ceil(flat.length / maxPoints))
+    const points = flat.filter((_, i) => i % thin === 0)
+    const hist = mcmc.names.map((name, d) => ({ name, ...histogram(flat.map((v) => v[d]), 30) }))
+    return { names: mcmc.names, points, hist }
+  },
+
+  mcmcStop() { mcmc = null },
 
   /** Minimise flat ΛCDM total χ² over Ωm, and over H0 too when a prior that constrains it is on (SN alone cannot). */
   fitLcdmOm(rawConfig: unknown) {

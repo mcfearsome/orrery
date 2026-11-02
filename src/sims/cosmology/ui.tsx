@@ -5,7 +5,7 @@ import { Axes, Chart, ErrorPoints, Line, clipId, defaultFrame, linearScale, logS
 import { BH_HISTORY_IDS, BH_HISTORY_LABELS } from './bhHistories'
 import { DESI_DR2_BAO } from './priors'
 import { CosmologyConfig, type LeakParams } from './schema'
-import type { CosmologyWorkerApi, Evaluation } from './worker'
+import type { CosmologyWorkerApi, Evaluation, McmcProgress } from './worker'
 
 type Data = { z: number[]; mu: number[]; muErr: number[]; cid: string[] }
 
@@ -24,6 +24,11 @@ export function CosmologyPanel() {
   const [status, setStatus] = useState('loading Pantheon+ …')
   const [fitting, setFitting] = useState(false)
   const [lastFit, setLastFit] = useState<{ chi2: number; iterations: number; converged: boolean } | null>(null)
+  const [mc, setMc] = useState<McmcProgress | null>(null)
+  const [mcRunning, setMcRunning] = useState(false)
+  const [mcOpts, setMcOpts] = useState({ nWalkers: 32, steps: 600, freeBeta: true })
+  const [mcPlot, setMcPlot] = useState<{ names: string[]; points: number[][]; hist: { name: string; edges: number[]; counts: number[] }[] } | null>(null)
+  const mcStop = useRef(false)
   const pending = useRef(false)
   const queued = useRef<CosmologyConfig | null>(null)
 
@@ -87,6 +92,22 @@ export function CosmologyPanel() {
     } finally { setFitting(false) }
   }
 
+  const runMcmc = async () => {
+    setMcRunning(true); mcStop.current = false; setMc(null); setMcPlot(null)
+    try {
+      await api.mcmcStart(cfg, { nWalkers: mcOpts.nWalkers, freeBeta: mcOpts.freeBeta, seed: 42 })
+      const chunk = 10
+      for (let done = 0; done < mcOpts.steps && !mcStop.current; done += chunk) {
+        const p = await api.mcmcStep(Math.min(chunk, mcOpts.steps - done))
+        setMc(p)
+        setStatus(`MCMC step ${p.steps}/${mcOpts.steps} · acceptance ${(p.acceptance * 100).toFixed(0)}% · ${p.evaluations} evals`)
+        if (p.steps % 50 === 0 || p.steps >= mcOpts.steps) setMcPlot(await api.mcmcSamples())
+      }
+      setMcPlot(await api.mcmcSamples())
+      setStatus(mcStop.current ? 'MCMC stopped' : 'MCMC finished')
+    } catch (e) { setStatus(`MCMC error: ${String(e)}`) } finally { setMcRunning(false) }
+  }
+
   const exportScene = () => {
     if (!ev || !data) return
     const dM_L = ev.chi2Lcdm.deltaM, dM_K = ev.chi2Leak.deltaM
@@ -123,7 +144,7 @@ export function CosmologyPanel() {
         lA_lcdm: ev.priorsLcdm.early.lA, lA_leak: ev.priorsLeak.early.lA,
         rd_lcdm: ev.priorsLcdm.early.rd, rd_leak: ev.priorsLeak.early.rd,
       },
-      notes: 'ΔM is the analytically marginalised magnitude offset; curves are shifted by it to overlay the data. Full STAT+SYS covariance unless params.fullCovariance is false.',
+      notes: 'ΔM is the analytically marginalised magnitude offset; curves are shifted by it to overlay the data. Full STAT+SYS covariance unless params.fullCovariance is false.' + (mc ? ` Posterior (${mc.steps} steps × ${mc.nWalkers} walkers, 30% burn-in): ` + Object.entries(mc.summaries).map(([k, v]) => `${k} = ${v.median.toFixed(4)} +${(v.hi84 - v.median).toFixed(4)} −${(v.median - v.lo16).toFixed(4)}`).join(', ') : ''),
       createdAt: new Date().toISOString(),
     })
     const json = JSON.stringify(scene, null, 2)
@@ -192,6 +213,26 @@ export function CosmologyPanel() {
           <p className="note">ω_b fixed at {cfg.omegaB}. r_d, z*, z_d and D_M(z*) are the model's own integrals anchored to Planck 2018 ΛCDM at the fiducial.</p>
         </div>
         <div className="card">
+          <h2>Posterior (MCMC) <span className="tag muted">ensemble sampler, flat priors</span></h2>
+          <div className="row"><label>walkers</label><input type="number" min={8} max={128} step={2} value={mcOpts.nWalkers} onChange={(e) => setMcOpts((o) => ({ ...o, nWalkers: Number(e.target.value) }))} /><span className="unit" /></div>
+          <div className="row"><label>steps</label><input type="number" min={50} max={5000} step={50} value={mcOpts.steps} onChange={(e) => setMcOpts((o) => ({ ...o, steps: Number(e.target.value) }))} /><span className="unit" /></div>
+          <label className="check"><input type="checkbox" checked={mcOpts.freeBeta} onChange={(e) => setMcOpts((o) => ({ ...o, freeBeta: e.target.checked }))} />β free (otherwise fixed at 0)</label>
+          <div className="btns">
+            <button className="btn primary" disabled={!data || fitting || mcRunning} onClick={runMcmc}>Run MCMC from current point</button>
+            <button className="btn" disabled={!mcRunning} onClick={() => { mcStop.current = true }}>Stop</button>
+          </div>
+          {mc && (
+            <table className="readouts" style={{ marginTop: 8 }}>
+              <thead><tr><th /><th>median</th><th>+1σ</th><th>−1σ</th><th>τ</th></tr></thead>
+              <tbody>
+                {Object.entries(mc.summaries).map(([k, v]) => <tr key={k}><td>{k}</td><td>{fmt(v.median, 4)}</td><td>{fmt(v.hi84 - v.median, 4)}</td><td>{fmt(v.median - v.lo16, 4)}</td><td>{Number.isFinite(v.tau) ? v.tau.toFixed(0) : '—'}</td></tr>)}
+                <tr><td>best χ² in chain</td><td colSpan={4}>{fmt(mc.bestChi2, 2)} · acceptance {(mc.acceptance * 100).toFixed(0)}%</td></tr>
+              </tbody>
+            </table>
+          )}
+          <p className="note">Start from a best fit. Walkers ≈ 8× parameters, steps ≳ 50 τ; the 30% burn-in is discarded. Flat priors: α ∈ (0, 5], β ∈ [−4, 8], γ ∈ [−1, 5], Ωm ∈ [0.05, 0.9].</p>
+        </div>
+        <div className="card">
           <h2>Readouts <span className="tag muted">{ev ? `n = ${ev.chi2Lcdm.n}, dof = ${dof}` : ''}</span></h2>
           <table className="readouts">
             <thead><tr><th /><th className="lcdm">ΛCDM</th><th className="leak">leak</th></tr></thead>
@@ -223,6 +264,7 @@ export function CosmologyPanel() {
         <HubbleDiagram data={data} ev={ev} cfg={cfg} />
         <ResidualPanel data={data} ev={ev} />
         <BAOPanel ev={ev} />
+        {mcPlot && <PosteriorPanel plot={mcPlot} />}
         <DensityPanel ev={ev} cfgHistory={cfg.leak.bhHistory} />
       </main>
     </div>
@@ -361,6 +403,52 @@ function BAOPanel({ ev }: { ev: Evaluation | null }) {
         </Chart>
       </div>
       <p className="note">Error bars are the diagonal of each bin; the χ² uses the published D_M–D_H correlation per bin. The BGS bin (z = 0.295) enters χ² through D_V/r_d only and is not drawn.</p>
+    </div>
+  )
+}
+
+function PosteriorPanel({ plot }: { plot: { names: string[]; points: number[][]; hist: { name: string; edges: number[]; counts: number[] }[] } }) {
+  const [xi, setXi] = useState(0)
+  const [yi, setYi] = useState(plot.names.length > 1 ? plot.names.length - 2 : 0)
+  const fr = { w: 440, h: 300, l: 56, r: 12, t: 14, b: 36 }
+  const col = (i: number) => plot.points.map((p) => p[i])
+  const xs = col(xi), ys = col(yi)
+  const pad = (v: number[]) => { const lo = Math.min(...v), hi = Math.max(...v); const m = (hi - lo) * 0.05 || 0.01; return [lo - m, hi + m] as const }
+  const [x0, x1] = pad(xs), [y0, y1] = pad(ys)
+  const x = linearScale(x0, x1, fr.l, fr.w - fr.r, 4), y = linearScale(y0, y1, fr.h - fr.b, fr.t, 4)
+  const hfr = { w: 440, h: 300, l: 56, r: 12, t: 14, b: 36 }
+  return (
+    <div className="card">
+      <h2>Posterior samples <span className="tag muted">thinned to {plot.points.length} points after burn-in</span></h2>
+      <div className="row">
+        <label>x · y</label>
+        <select className="select" value={xi} onChange={(e) => setXi(Number(e.target.value))}>{plot.names.map((n, i) => <option key={n} value={i}>{n}</option>)}</select>
+        <select className="select" value={yi} onChange={(e) => setYi(Number(e.target.value))}>{plot.names.map((n, i) => <option key={n} value={i}>{n}</option>)}</select>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12 }}>
+        <Chart fr={fr} title="2-D posterior">
+          <Axes fr={fr} x={x} y={y} xLabel={plot.names[xi]} yLabel={plot.names[yi]} />
+          <g clipPath={clipId(fr)}>
+            <ErrorPoints xs={xs} ys={ys} x={x} y={y} color={COL.leak} r={1.4} opacity={0.35} />
+          </g>
+        </Chart>
+        <Chart fr={hfr} title="1-D posteriors">
+          {(() => {
+            const h = plot.hist[xi]
+            const max = Math.max(...h.counts) || 1
+            const hx = linearScale(h.edges[0], h.edges[h.edges.length - 1], hfr.l, hfr.w - hfr.r, 4)
+            const hy = linearScale(0, max, hfr.h - hfr.b, hfr.t, 4)
+            return (
+              <>
+                <Axes fr={hfr} x={hx} y={hy} xLabel={h.name} yLabel="samples" />
+                <g clipPath={clipId(hfr)}>
+                  {h.counts.map((c, i) => <rect key={i} x={hx(h.edges[i])} y={hy(c)} width={Math.max(1, hx(h.edges[i + 1]) - hx(h.edges[i]) - 1)} height={hy(0) - hy(c)} fill={COL.accent} opacity={0.8} />)}
+                </g>
+              </>
+            )
+          })()}
+        </Chart>
+      </div>
     </div>
   )
 }

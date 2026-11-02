@@ -34,7 +34,7 @@ describe('tabulated BH histories', () => {
   it('every id resolves and the SFR proxy is the default', () => {
     for (const id of BH_HISTORY_IDS) expect(bhHistory(id).id).toBe(id)
     const a = integrateLeak({ alpha: 0.03, beta: 0, gamma: 0 })
-    const b = integrateLeak({ alpha: 0.03, beta: 0, gamma: 0 }, 3000, bhHistory('sfr_proxy'))
+    const b = integrateLeak({ alpha: 0.03, beta: 0, gamma: 0 }, 1000, bhHistory('sfr_proxy'))
     expect(a.omega0).toBe(b.omega0)
   })
 })
