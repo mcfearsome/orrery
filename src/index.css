@@ -36,6 +36,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 .row label { width: 64px; color: var(--muted); font-family: var(--mono); font-size: 12px; }
 .row input[type=range] { flex: 1; accent-color: var(--accent); }
 .row input[type=number] { width: 86px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font-family: var(--mono); font-size: 12px; }
+.row .select { flex: 1; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font-family: var(--mono); font-size: 12px; min-width: 0; }
 .row .unit { color: var(--muted); font-size: 11px; width: 30px; }
 .btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; cursor: pointer; font: inherit; font-size: 13px; }
 .btn:hover { border-color: var(--accent); }

@@ -2,6 +2,7 @@ import * as Comlink from 'comlink'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Scene } from '../../scenes/schema'
 import { Axes, Chart, ErrorPoints, Line, clipId, defaultFrame, linearScale, logScale } from './charts'
+import { BH_HISTORY_IDS, BH_HISTORY_LABELS } from './bhHistories'
 import { DESI_DR2_BAO } from './priors'
 import { CosmologyConfig, type LeakParams } from './schema'
 import type { CosmologyWorkerApi, Evaluation } from './worker'
@@ -157,6 +158,12 @@ export function CosmologyPanel() {
           <Slider label="log₁₀ α" value={Math.log10(Math.max(lp.alpha, 1e-6))} min={-5} max={1} step={0.01} onChange={(v) => setLeak({ alpha: 10 ** v })} display={lp.alpha.toExponential(2)} />
           <Slider label="β" value={lp.beta} min={-4} max={8} step={0.01} onChange={(v) => setLeak({ beta: v })} />
           <Slider label="γ" value={lp.gamma} min={-1} max={5} step={0.01} onChange={(v) => setLeak({ gamma: v })} />
+          <div className="row">
+            <label>BH history</label>
+            <select className="select" value={cfg.leak.bhHistory} onChange={(e) => setCfg((c) => ({ ...c, leak: { ...c.leak, bhHistory: e.target.value as typeof c.leak.bhHistory } }))}>
+              {BH_HISTORY_IDS.map((id) => <option key={id} value={id}>{BH_HISTORY_LABELS[id]}</option>)}
+            </select>
+          </div>
           <Slider label="Ωm ref" value={cfg.leak.Om} min={0.05} max={0.9} step={0.001} onChange={(v) => setCfg((c) => ({ ...c, leak: { ...c.leak, Om: v } }))} />
           <div className="btns">
             <button className="btn primary" disabled={!data || fitting} onClick={runFit}>Best fit (α, β, γ{cfg.fitDensities ? ', Ωm' : ''})</button>
@@ -216,7 +223,7 @@ export function CosmologyPanel() {
         <HubbleDiagram data={data} ev={ev} cfg={cfg} />
         <ResidualPanel data={data} ev={ev} />
         <BAOPanel ev={ev} />
-        <DensityPanel ev={ev} />
+        <DensityPanel ev={ev} cfgHistory={cfg.leak.bhHistory} />
       </main>
     </div>
   )
@@ -304,14 +311,14 @@ function ResidualPanel({ data, ev }: { data: Data | null; ev: Evaluation | null 
   )
 }
 
-function DensityPanel({ ev }: { ev: Evaluation | null }) {
+function DensityPanel({ ev, cfgHistory }: { ev: Evaluation | null; cfgHistory: CosmologyConfig['leak']['bhHistory'] }) {
   const fr = defaultFrame(900, 240)
   const x = useMemo(() => logScale(0.009, 2.4, fr.l, fr.w - fr.r), [fr.l, fr.w, fr.r])
   const yMax = ev ? Math.max(1, ev.omegaLambda * 1.2, Math.max(...ev.omegaLeak) * 1.2) : 1
   const y = useMemo(() => linearScale(0, yMax, fr.h - fr.b, fr.t, 5), [fr.h, fr.b, fr.t, yMax])
   return (
     <div className="card">
-      <h2>Dark-energy density history <span className="tag muted">fractions of ρ_crit(H0); dotted = BH mass fraction formed</span></h2>
+      <h2>Dark-energy density history <span className="tag muted">fractions of ρ_crit(H0); dotted = BH mass fraction formed ({BH_HISTORY_LABELS[cfgHistory]})</span></h2>
       <Legend items={[{ color: COL.lcdm, label: 'ΩΛ (constant)' }, { color: COL.leak, label: 'Ω_leak(z)' }, { color: COL.accent, label: 'ρ_BH(z)/ρ_BH(0)', dash: true }]} />
       <Chart fr={fr} title="Density history">
         <Axes fr={fr} x={x} y={y} xLabel="z" yLabel="Ω" />

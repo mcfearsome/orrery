@@ -6,6 +6,7 @@
  * or a Node script unchanged. Units: H0 in km/s/Mpc, distances in Mpc,
  * densities as fractions of the critical density at the reference H0.
  */
+import { tabulatedHistory, type BHHistory, type BHHistoryId } from './bhHistories'
 import type { LCDMParams, LeakModelParams, LeakParams } from './schema'
 
 export const C_KM_S = 299792.458
@@ -108,6 +109,19 @@ export function bhMassFraction(z: number): number {
   return (s * h) / 3
 }
 
+/** The analytic SFR-shaped proxy as a BHHistory. */
+export const SFR_PROXY_HISTORY: BHHistory = {
+  id: 'sfr_proxy',
+  zCut: BH_HISTORY_Z_MAX,
+  fraction: bhMassFraction,
+  ratePerLnA: bhFormationRateNormalised,
+}
+
+/** Resolve a history id; 'sfr_proxy' is analytic, the rest are tabulated from published figures. */
+export function bhHistory(id: BHHistoryId = 'sfr_proxy'): BHHistory {
+  return id === 'sfr_proxy' ? SFR_PROXY_HISTORY : tabulatedHistory(id)
+}
+
 // ---------------------------------------------------------------------------
 // Leak law. ONE pure function; swap it to try another law.
 //
@@ -119,9 +133,9 @@ export function bhMassFraction(z: number): number {
 // so the leak history is independent of the expansion it then drives.
 // ---------------------------------------------------------------------------
 
-/** Source term dΩ_leak/dx (excluding dilution) at redshift z. */
-export function leakSource(z: number, p: LeakParams): number {
-  return p.alpha * (1 + z) ** (p.beta + 3) * bhFormationRateNormalised(z)
+/** Source term dΩ_leak/dx (excluding dilution) at redshift z, for a given BH formation history. */
+export function leakSource(z: number, p: LeakParams, hist: BHHistory = SFR_PROXY_HISTORY): number {
+  return p.alpha * (1 + z) ** (p.beta + 3) * hist.ratePerLnA(z)
 }
 
 export interface LeakHistory {
@@ -134,12 +148,12 @@ export interface LeakHistory {
 }
 
 /** Integrate the leak ODE with RK4 in x = ln a from z = BH_HISTORY_Z_MAX to today. */
-export function integrateLeak(p: LeakParams, steps = 3000): LeakHistory {
+export function integrateLeak(p: LeakParams, steps = 3000, hist: BHHistory = SFR_PROXY_HISTORY): LeakHistory {
   const xMin = -Math.log(1 + BH_HISTORY_Z_MAX)
   const h = -xMin / steps
   const x = new Float64Array(steps + 1)
   const omega = new Float64Array(steps + 1)
-  const rhs = (xx: number, om: number) => leakSource(Math.exp(-xx) - 1, p) - p.gamma * om
+  const rhs = (xx: number, om: number) => leakSource(Math.exp(-xx) - 1, p, hist) - p.gamma * om
   let om = 0
   for (let i = 0; i < steps; i++) {
     const xi = xMin + i * h
@@ -169,7 +183,7 @@ export function leakOmegaAt(hist: LeakHistory, z: number): number {
 }
 
 /** E(z) for the leak model (flat; E(0) floats with Ω_leak(0)). */
-export function leakE(p: LeakModelParams, hist = integrateLeak(p.leak)): Expansion {
+export function leakE(p: LeakModelParams, hist = integrateLeak(p.leak, 3000, bhHistory(p.bhHistory))): Expansion {
   return (z) => {
     const a1 = 1 + z
     return Math.sqrt(p.Or * a1 ** 4 + p.Om * a1 ** 3 + leakOmegaAt(hist, z))
@@ -236,8 +250,8 @@ export function lcdmDistanceTable(p: LCDMParams, zMax = 2.6): DistanceTable {
   return buildDistanceTable(lcdmE(p), p.H0, p.Ok, zMax)
 }
 
-export function leakDistanceTable(p: LeakModelParams, zMax = 2.6): DistanceTable {
-  return buildDistanceTable(leakE(p), p.H0, 0, zMax)
+export function leakDistanceTable(p: LeakModelParams, zMax = 2.6, hist?: LeakHistory): DistanceTable {
+  return buildDistanceTable(leakE(p, hist), p.H0, 0, zMax)
 }
 
 // ---------------------------------------------------------------------------

@@ -94,6 +94,24 @@ returns Ωm = 0.302, H0 = 68.3 (DESI+CMB published: 0.3027 ± 0.0036, 68.17 ± 0
 With priors on, the fits vary Ωm (and H0 for ΛCDM). The scene export carries every χ²
 component and the (R, ℓ_A, r_d) of both models.
 
+### Module 1.2 · published black-hole histories
+
+The SFR-shaped proxy is now one of five selectable histories (`bhHistories.ts`, dropdown in
+the leak card). The other four are read from the papers' own figure files in their arXiv
+sources, because none prints ρ_BH(z) as a table:
+
+| id | source | extraction | z range |
+|---|---|---|---|
+| `shankar2009_smbh` | Shankar, Weinberg & Miralda-Escudé 2009, ApJ 690, 20, Fig. 6b | vertices of the PostScript path (vector, exact) | 0–6 |
+| `sicilia2022_smbh` | Sicilia et al. 2022b, ApJ 934, 66, Fig. 8 "Overall" | colour-tracked raster, frame-calibrated | 0–8 |
+| `sicilia2022_stellar` | Sicilia et al. 2022a, ApJ 924, 56, Fig. 7 | colour-tracked raster, tick-calibrated | 0–10 |
+| `sicilia2022_total` | mass-weighted sum of the two Sicilia histories | | 0–10 |
+
+Each table is log₁₀ ρ on a 0.25 step in z, interpolated with a monotone cubic (PCHIP) so ρ
+never increases with z, extrapolated with the end slope and cut at z = 30. The leak law takes
+the normalised rate per unit ln a, so α still absorbs the normalisation and only the shape
+matters. Tests check each history is monotone, starts at 1 and integrates to 1.
+
 ### Not in v1
 
 No WebGPU, no N-body, no backend, no auth. The data are never re-weighted to the model.

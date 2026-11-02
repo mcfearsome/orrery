@@ -1,11 +1,10 @@
 /// <reference lib="webworker" />
 import * as Comlink from 'comlink'
 import { fetchPantheonPlus } from './data'
+import { bhHistory } from './model'
 import {
   baoChi2,
   baoPredict,
-  bhFormationRateNormalised,
-  bhMassFraction,
   chi2Gaussian2,
   chi2Marginalised,
   distanceModulus,
@@ -106,9 +105,9 @@ function scoreLcdm(cfg: CosmologyConfig, s: SNSample) {
 }
 
 function scoreLeak(cfg: CosmologyConfig, s: SNSample) {
-  const hist = integrateLeak(cfg.leak.leak)
+  const hist = integrateLeak(cfg.leak.leak, 3000, bhHistory(cfg.leak.bhHistory))
   const E = leakE(cfg.leak, hist)
-  const sn = chi2Marginalised(s, modelMu(leakDistanceTable(cfg.leak), s), cfg.fullCovariance)
+  const sn = chi2Marginalised(s, modelMu(leakDistanceTable(cfg.leak, 2.6, hist), s), cfg.fullCovariance)
   const ps = scorePriors(E, cfg.leak.H0, omegaMOf(cfg.leak.Om, cfg.leak.H0), cfg.omegaB)
   return { sn, ps, total: totalWithPriors(cfg, sn.chi2, ps), hist, E }
 }
@@ -134,9 +133,10 @@ const api = {
     if (!sample) throw new Error('data not loaded')
     const cfg = withRadiation(CosmologyConfig.parse(rawConfig))
     const tL = lcdmDistanceTable(cfg.lcdm)
-    const hist = integrateLeak(cfg.leak.leak)
+    const bh = bhHistory(cfg.leak.bhHistory)
+    const hist = integrateLeak(cfg.leak.leak, 3000, bh)
     const E = leakE(cfg.leak, hist)
-    const tK = leakDistanceTable(cfg.leak)
+    const tK = leakDistanceTable(cfg.leak, 2.6, hist)
     const zs = zGrid()
     const lcdm = zs.map((z) => distanceModulus(tL, z))
     const leak = zs.map((z) => distanceModulus(tK, z))
@@ -165,8 +165,8 @@ const api = {
       chi2Leak,
       omegaLeak: zs.map((z) => leakOmegaAt(hist, z)),
       omegaLambda: lcdmLambda(cfg.lcdm),
-      bhFraction: zs.map((z) => bhMassFraction(z)),
-      bhRate: zs.map((z) => bhFormationRateNormalised(z)),
+      bhFraction: zs.map((z) => bh.fraction(z)),
+      bhRate: zs.map((z) => bh.ratePerLnA(z)),
       E0,
       H0Eff: cfg.leak.H0 * E0,
       omegaLeak0: hist.omega0,

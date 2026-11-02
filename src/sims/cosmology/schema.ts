@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { BH_HISTORY_IDS } from './bhHistories'
 
 /** Flat/curved ΛCDM background. Fractions are relative to the critical density at H0. */
 export const LCDMParams = z.object({
@@ -34,6 +35,8 @@ export const LeakModelParams = z.object({
   Om: z.number().min(0).max(2).default(0.315),
   Or: z.number().min(0).max(0.01).default(0),
   leak: LeakParams.default(() => LeakParams.parse({})),
+  /** which black-hole mass-density history sources the leak */
+  bhHistory: z.enum(BH_HISTORY_IDS).default('sfr_proxy'),
 })
 export type LeakModelParams = z.infer<typeof LeakModelParams>
 
