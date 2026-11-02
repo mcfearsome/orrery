@@ -45,5 +45,23 @@ export const PRESETS: Record<string, Partial<OneSheetConfig>> = {
     expandRate: 0.04,
     poolRate: 0.05,
   },
+  /** s12: the underside ocean bursts up and a smaller universe unfurls inside this one, three deep */
+  cycle: {
+    masses: galaxyField(18, 40, 5, 11),
+    sheetSize: 40,
+    resolution: 160,
+    softening: 0.6,
+    exaggeration: 0.7,
+    translucency: 0.7,
+    bhThreshold: 0.5,
+    leakRate: 300,
+    particles: 60000,
+    spread: 4,
+    pooled: 1,
+    ridge: 0.15,
+    cycleDepth: 3,
+    cyclePeriod: 8,
+    cycleShrink: 0.45,
+  },
 }
 export type PresetId = keyof typeof PRESETS

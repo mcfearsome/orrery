@@ -47,5 +47,11 @@ export const OneSheetConfig = z.object({
   expandRate: z.number().min(0).max(1).default(0),
   /** how fast `pooled` rises per second while playing (0 = static) */
   poolRate: z.number().min(0).max(1).default(0),
+  /** nested universes: how many child sheets the cycle spawns while playing (0 = off) */
+  cycleDepth: z.number().int().min(0).max(6).default(0),
+  /** seconds per cycle: ocean pools, bursts up, a child sheet unfurls */
+  cyclePeriod: z.number().min(2).max(60).default(8),
+  /** each child sheet's size relative to its parent */
+  cycleShrink: z.number().min(0.2).max(0.8).default(0.45),
 })
 export type OneSheetConfig = z.infer<typeof OneSheetConfig>

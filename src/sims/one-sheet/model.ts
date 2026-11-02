@@ -125,3 +125,20 @@ export function crossSection(cfg: OneSheetConfig, y0: number, n = 256): { x: num
   }
   return { x, h }
 }
+
+/**
+ * Where the nested-universe cycle stands at time t: `level` is the child being born (1-based, 0 before
+ * the first), `phase` its progress in [0, 1]; finished levels stay. Pure animation timing, no physics.
+ */
+export function cyclePhase(t: number, period: number, depth: number): { level: number; phase: number } {
+  if (depth <= 0 || t <= 0) return { level: 0, phase: 0 }
+  const level = Math.min(depth, Math.floor(t / period) + 1)
+  return { level, phase: Math.min(1, (t - (level - 1) * period) / period) }
+}
+
+/** Size and lift of child sheet k (k ≥ 1) relative to the root sheet, so each nests inside and just above its parent. */
+export function nestedSheet(k: number, shrink: number, lift: number): { scale: number; y: number } {
+  let y = 0
+  for (let j = 0; j < k; j++) y += lift * shrink ** j
+  return { scale: shrink ** k, y }
+}

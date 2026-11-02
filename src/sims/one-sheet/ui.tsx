@@ -4,7 +4,7 @@ import * as Comlink from 'comlink'
 import { useEffect, useMemo, useRef, useState, type ComponentRef, type RefObject } from 'react'
 import * as THREE from 'three'
 import { Axes, Chart, Line, defaultFrame, linearScale } from '../cosmology/charts'
-import { crossSection, drains, expanded, totalHeightAt, type Drain, type HeightField } from './model'
+import { crossSection, cyclePhase, drains, expanded, nestedSheet, totalHeightAt, type Drain, type HeightField } from './model'
 import { PRESETS } from './presets'
 import { OneSheetConfig, type PointMass } from './schema'
 import type { OneSheetWorkerApi } from './worker'
@@ -20,7 +20,7 @@ function createWorkerApi(): Comlink.Remote<OneSheetWorkerApi> {
 }
 
 /** Animation state lives outside React: it changes every frame. */
-export interface Anim { scale: number; pooled: number; playing: boolean }
+export interface Anim { scale: number; pooled: number; /** seconds into the nested-universe cycle */ t: number; playing: boolean }
 
 /** Grid geometry for `n` vertices per side; positions and colours are filled in by `applyField`. */
 function gridGeometry(n: number): THREE.BufferGeometry {
@@ -138,6 +138,51 @@ function drainMaterial(): THREE.ShaderMaterial {
   })
 }
 
+const OCEAN_VERT = /* glsl */ `
+uniform float uPhase, uScale, uLift, uR, uPx;
+attribute vec4 aSeed;
+varying float vAlpha;
+void main() {
+  float p = uPhase;
+  float r0 = uR * sqrt(aSeed.x);
+  float ang = aSeed.y * 6.2831853;
+  vec2 xy; float y; float a;
+  if (p < 0.45) {
+    // pool: the underside ocean gathers and swells
+    float q = p / 0.45;
+    xy = r0 * (0.3 + 0.7 * q) * vec2(cos(ang), sin(ang));
+    y = uLift - uScale * (0.35 + 0.25 * q * aSeed.z);
+    a = 0.25 * q;
+  } else if (p < 0.6) {
+    // burst: it funnels in and shoots UP through the sheet, the only upward path
+    float q = (p - 0.45) / 0.15;
+    xy = mix(r0, r0 * 0.15, q) * vec2(cos(ang + 2.0 * q), sin(ang + 2.0 * q));
+    y = uLift - uScale * 0.35 + q * q * uScale * 4.0 * (0.5 + aSeed.z);
+    a = 0.35;
+  } else {
+    // settle: rains out over the new sheet and fades
+    float q = (p - 0.6) / 0.4;
+    xy = (r0 * 0.15 + q * r0 * 0.8) * vec2(cos(ang), sin(ang));
+    y = uLift + uScale * 4.0 * (0.5 + aSeed.z) * (1.0 - q) + uScale * 0.3;
+    a = 0.3 * (1.0 - q);
+  }
+  vAlpha = a;
+  vec4 mv = modelViewMatrix * vec4(xy.x, y, xy.y, 1.0);
+  gl_Position = projectionMatrix * mv;
+  gl_PointSize = clamp(uPx * 70.0 / -mv.z, 1.5, 8.0);
+}`
+
+function oceanMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: OCEAN_VERT,
+    fragmentShader: DRAIN_FRAG,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uPhase: { value: 0 }, uScale: { value: 1 }, uLift: { value: 0 }, uR: { value: 1 }, uPx: { value: 1 }, uColor: { value: new THREE.Color(C.flow) } },
+  })
+}
+
 /** Stateless GPU particles: a seed and a drain index each; position is a pure function of time. */
 function particleGeometry(n: number, nDrains: number): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry()
@@ -153,7 +198,7 @@ function particleGeometry(n: number, nDrains: number): THREE.BufferGeometry {
 }
 
 /** Current field as the renderer last applied it: what the markers and the chart follow. */
-export interface Applied { cfg: OneSheetConfig; ds: Drain[]; scale: number; pooled: number }
+export interface Applied { cfg: OneSheetConfig; ds: Drain[]; scale: number; pooled: number; t: number }
 
 /**
  * The sheet, the drain flow and the markers. The height field is computed in a worker; while playing,
@@ -172,11 +217,22 @@ function Surface({ cfg, anim, onTick }: { cfg: OneSheetConfig; anim: RefObject<A
     return t
   }, [n])
   const mat = useMemo(drainMaterial, [])
+  const sheetMats = useMemo(() => ({
+    top: new THREE.MeshStandardMaterial({ color: C.top, roughness: 0.95, metalness: 0, side: THREE.FrontSide, vertexColors: true, transparent: true, alphaTest: 0.02, polygonOffset: true, polygonOffsetFactor: 1 }),
+    under: new THREE.MeshStandardMaterial({ color: '#3a3222', emissive: C.under, emissiveIntensity: 0.05, roughness: 0.9, metalness: 0, side: THREE.BackSide, vertexColors: true, transparent: true, alphaTest: 0.02, polygonOffset: true, polygonOffsetFactor: 1 }),
+    wire: new THREE.MeshBasicMaterial({ color: C.wire, wireframe: true, transparent: true, opacity: 0.16, depthWrite: false }),
+  }), [])
+  const oceanMat = useMemo(oceanMaterial, [])
+  const oceanGeo = useMemo(() => particleGeometry(20000, 1), [])
+  const nested = useRef<(THREE.Group | null)[]>([])
+  const flash = useRef<THREE.PointLight>(null)
   const nDrains = drains(cfg).length
   const pgeo = useMemo(() => particleGeometry(cfg.particles, nDrains), [cfg.particles, nDrains])
   useEffect(() => () => geo.dispose(), [geo])
   useEffect(() => () => tex.dispose(), [tex])
   useEffect(() => () => mat.dispose(), [mat])
+  useEffect(() => () => { sheetMats.top.dispose(); sheetMats.under.dispose(); sheetMats.wire.dispose() }, [sheetMats])
+  useEffect(() => () => { oceanMat.dispose(); oceanGeo.dispose() }, [oceanMat, oceanGeo])
   useEffect(() => () => pgeo.dispose(), [pgeo])
 
   const applied = useRef<Applied | null>(null)
@@ -194,7 +250,35 @@ function Surface({ cfg, anim, onTick }: { cfg: OneSheetConfig; anim: RefObject<A
       a.pooled = Math.min(1, a.pooled + cfg.poolRate * Math.min(dt, 0.1))
       dirty.current = true
     }
+    if (a.playing && cfg.cycleDepth > 0) a.t += Math.min(dt, 0.1)
     mat.uniforms.uTime.value = s.clock.elapsedTime
+
+    // nested-universe cycle: child k unfurls on its parent once the parent's ocean has burst
+    const cy = cyclePhase(a.t, cfg.cyclePeriod, cfg.cycleDepth)
+    const lift = 1.2 * cfg.exaggeration
+    for (let k = 1; k <= cfg.cycleDepth; k++) {
+      const g = nested.current[k]
+      if (!g) continue
+      const phase = k < cy.level ? 1 : k === cy.level ? cy.phase : 0
+      const unfurl = THREE.MathUtils.smoothstep(phase, 0.55, 0.95)
+      const { scale, y } = nestedSheet(k, cfg.cycleShrink, lift)
+      g.visible = unfurl > 0
+      g.scale.setScalar(scale * unfurl)
+      g.position.y = y
+    }
+    const parent = nestedSheet(cy.level - 1, cfg.cycleShrink, lift)
+    const ocean = oceanMat.uniforms
+    oceanMat.visible = cy.level > 0 && cy.phase < 1
+    ocean.uPhase.value = cy.phase
+    ocean.uScale.value = parent.scale * cfg.sheetSize / 24
+    ocean.uLift.value = parent.y
+    ocean.uR.value = 0.3 * cfg.sheetSize * parent.scale
+    ocean.uPx.value = 1.8 * dpr
+    if (flash.current) {
+      flash.current.position.y = parent.y + 0.5
+      const burst = Math.exp(-(((cy.phase - 0.53) / 0.06) ** 2))
+      flash.current.intensity = oceanMat.visible ? cfg.sheetSize * 40 * parent.scale * burst : 0
+    }
 
     if (dirty.current && !pending.current) {
       dirty.current = false
@@ -217,9 +301,12 @@ function Surface({ cfg, anim, onTick }: { cfg: OneSheetConfig; anim: RefObject<A
         // lifetime so that flux per drain = leakRate: particles per drain / rate, kept in a watchable range
         u.uLife.value = THREE.MathUtils.clamp(cfg.particles / Math.max(1, ds.length) / cfg.leakRate, 2, 60)
         ds.slice(0, MAX_DRAINS).forEach((d, i) => u.uDrain.value[i].set(d.x, d.y, d.throat, totalHeightAt(eff, ds, d.x, d.y)))
-        applied.current = { cfg: eff, ds, scale, pooled }
-        if (s.clock.elapsedTime - lastTick.current > 0.25) { lastTick.current = s.clock.elapsedTime; onTick(applied.current) }
+        applied.current = { cfg: eff, ds, scale, pooled, t: a.t }
       }).finally(() => { pending.current = false })
+    }
+    if (applied.current && s.clock.elapsedTime - lastTick.current > 0.25) {
+      lastTick.current = s.clock.elapsedTime
+      onTick({ ...applied.current, t: a.t })
     }
 
     // markers follow the applied field
@@ -236,17 +323,20 @@ function Surface({ cfg, anim, onTick }: { cfg: OneSheetConfig; anim: RefObject<A
   const throat = cfg.throat * cfg.softening
   return (
     <group>
-      {/* topside: front faces, lit from above */}
-      <mesh geometry={geo}>
-        <meshStandardMaterial color={C.top} roughness={0.95} metalness={0} side={THREE.FrontSide} vertexColors transparent alphaTest={0.02} polygonOffset polygonOffsetFactor={1} />
-      </mesh>
-      {/* underside: back faces of the same geometry, lit from below in the accent */}
-      <mesh geometry={geo}>
-        <meshStandardMaterial color="#3a3222" emissive={C.under} emissiveIntensity={0.05} roughness={0.9} metalness={0} side={THREE.BackSide} vertexColors transparent alphaTest={0.02} polygonOffset polygonOffsetFactor={1} />
-      </mesh>
-      <mesh geometry={geo}>
-        <meshBasicMaterial color={C.wire} wireframe transparent opacity={0.16} depthWrite={false} />
-      </mesh>
+      {/* topside: front faces, lit from above; underside: back faces of the same geometry, lit from below in the accent */}
+      <mesh geometry={geo} material={sheetMats.top} />
+      <mesh geometry={geo} material={sheetMats.under} />
+      <mesh geometry={geo} material={sheetMats.wire} />
+      {/* nested universes: the same sheet again, smaller, unfurling on top of its parent */}
+      {Array.from({ length: cfg.cycleDepth }, (_, i) => (
+        <group key={i + 1} ref={(el) => { nested.current[i + 1] = el }} visible={false}>
+          <mesh geometry={geo} material={sheetMats.top} />
+          <mesh geometry={geo} material={sheetMats.under} />
+          <mesh geometry={geo} material={sheetMats.wire} />
+        </group>
+      ))}
+      {cfg.cycleDepth > 0 && <points geometry={oceanGeo} material={oceanMat} frustumCulled={false} renderOrder={2} />}
+      {cfg.cycleDepth > 0 && <pointLight ref={flash} color={C.under} intensity={0} decay={2} />}
       {/* drawn after the sheet: the points write no depth, so an earlier draw would be painted over */}
       {nDrains > 0 && <points geometry={pgeo} material={mat} frustumCulled={false} renderOrder={1} />}
       {cfg.masses.map((m, i) =>
@@ -329,7 +419,7 @@ function SliceChart({ cfg, sliceY }: { cfg: OneSheetConfig; sliceY: number }) {
 const rnd = (a: number, b: number) => a + Math.random() * (b - a)
 const fmt = (v: number, d = 2) => v.toFixed(d)
 
-type NumKey = 'exaggeration' | 'softening' | 'translucency' | 'sheetSize' | 'resolution' | 'bhThreshold' | 'throat' | 'leakRate' | 'particles' | 'spread' | 'pooled' | 'ridge' | 'expandRate' | 'poolRate'
+type NumKey = 'exaggeration' | 'softening' | 'translucency' | 'sheetSize' | 'resolution' | 'bhThreshold' | 'throat' | 'leakRate' | 'particles' | 'spread' | 'pooled' | 'ridge' | 'expandRate' | 'poolRate' | 'cycleDepth' | 'cyclePeriod' | 'cycleShrink'
 
 export function OneSheetPanel() {
   const [preset, setPreset] = useState<string>('default')
@@ -338,13 +428,13 @@ export function OneSheetPanel() {
   const [sliceY, setSliceY] = useState(0)
   const [view, setView] = useState<View>('topside')
   const [playing, setPlaying] = useState(false)
-  const anim = useRef<Anim>({ scale: 1, pooled: cfg.pooled, playing: false })
+  const anim = useRef<Anim>({ scale: 1, pooled: cfg.pooled, t: 0, playing: false })
   const [tick, setTick] = useState<Applied | null>(null)
 
   const set = (patch: Partial<OneSheetConfig>) => setCfg((c) => OneSheetConfig.parse({ ...c, ...patch }))
   const setMass = (i: number, patch: Partial<PointMass>) => set({ masses: cfg.masses.map((m, j) => (j === i ? { ...m, ...patch } : m)) })
   const scatter = (n: number) => set({ masses: Array.from({ length: n }, () => ({ x: rnd(-0.4, 0.4) * cfg.sheetSize, y: rnd(-0.4, 0.4) * cfg.sheetSize, m: rnd(0.3, 3) })) })
-  const reset = (c = cfg) => { anim.current.scale = 1; anim.current.pooled = c.pooled }
+  const reset = (c = cfg) => { anim.current.scale = 1; anim.current.pooled = c.pooled; anim.current.t = 0 }
   const loadPreset = (id: string) => {
     const c = OneSheetConfig.parse(PRESETS[id] ?? {})
     setPreset(id)
@@ -376,6 +466,9 @@ export function OneSheetPanel() {
           </div>
           {slider('expandRate', 'expand/s', 0, 0.3, 0.005)}
           {slider('poolRate', 'pool/s', 0, 0.3, 0.005)}
+          {slider('cycleDepth', 'depth', 0, 6, 1)}
+          {slider('cyclePeriod', 'period s', 2, 60, 0.5)}
+          {slider('cycleShrink', 'shrink', 0.2, 0.8, 0.05)}
           <div className="btns">
             <button className={`btn${playing ? ' primary' : ''}`} onClick={togglePlay}>{playing ? 'pause' : 'play'}</button>
             <button className="btn" onClick={() => reset()}>reset</button>
@@ -384,6 +477,7 @@ export function OneSheetPanel() {
             <tbody>
               <tr><td>scale factor</td><td>{tick ? fmt(tick.scale, 3) : '1.000'}</td></tr>
               <tr><td>pooled</td><td>{tick ? fmt(tick.pooled) : fmt(cfg.pooled)}</td></tr>
+              {cfg.cycleDepth > 0 && (() => { const c = cyclePhase(tick?.t ?? 0, cfg.cyclePeriod, cfg.cycleDepth); return <tr><td>cycle</td><td>level {c.level} / {cfg.cycleDepth} · {fmt(c.phase)}</td></tr> })()}
             </tbody>
           </table>
         </div>

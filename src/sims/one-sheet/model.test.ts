@@ -66,7 +66,7 @@ describe('one-sheet height field', () => {
 })
 
 import { galaxyField, PRESETS } from './presets'
-import { expanded } from './model'
+import { cyclePhase, expanded, nestedSheet } from './model'
 
 describe('presets and expansion', () => {
   it('cosmic preset parses, every galaxy drains, and the field is deterministic', () => {
@@ -84,5 +84,16 @@ describe('presets and expansion', () => {
     expect(e.sheetSize).toBe(40)
     expect(heightAt(e.masses, e.softening, e.exaggeration, 4, -2)).toBeCloseTo(heightAt(c.masses, c.softening, c.exaggeration, 2, -1), 10)
     expect(expanded(c, 1, c.pooled)).toBe(c)
+  })
+
+  it('cycle timing: levels advance one per period and hold at depth; child sheets nest and shrink', () => {
+    expect(cyclePhase(0, 8, 3)).toEqual({ level: 0, phase: 0 })
+    expect(cyclePhase(4, 8, 3)).toEqual({ level: 1, phase: 0.5 })
+    expect(cyclePhase(8, 8, 3)).toEqual({ level: 2, phase: 0 })
+    expect(cyclePhase(100, 8, 3)).toEqual({ level: 3, phase: 1 })
+    expect(cyclePhase(5, 8, 0)).toEqual({ level: 0, phase: 0 })
+    expect(nestedSheet(1, 0.5, 1)).toEqual({ scale: 0.5, y: 1 })
+    expect(nestedSheet(2, 0.5, 1)).toEqual({ scale: 0.25, y: 1.5 })
+    expect(OneSheetConfig.parse(PRESETS.cycle).cycleDepth).toBe(3)
   })
 })
