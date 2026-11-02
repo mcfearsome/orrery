@@ -64,3 +64,25 @@ describe('one-sheet height field', () => {
     expect(mid - midFlat).toBeCloseTo(0.25 * 6, 6)
   })
 })
+
+import { galaxyField, PRESETS } from './presets'
+import { expanded } from './model'
+
+describe('presets and expansion', () => {
+  it('cosmic preset parses, every galaxy drains, and the field is deterministic', () => {
+    const c = OneSheetConfig.parse(PRESETS.cosmic)
+    expect(c.masses.length).toBe(40)
+    expect(drains(c).length).toBe(40)
+    expect(galaxyField(40, 60, 6)).toEqual(galaxyField(40, 60, 6))
+    for (const a of c.masses) for (const b of c.masses) if (a !== b) expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(6)
+  })
+
+  it('expansion scales positions and the sheet, not the wells', () => {
+    const c = OneSheetConfig.parse({ masses: [{ x: 2, y: -1, m: 3 }], sheetSize: 20, bhThreshold: 100 })
+    const e = expanded(c, 2, 0)
+    expect(e.masses[0]).toEqual({ x: 4, y: -2, m: 3 })
+    expect(e.sheetSize).toBe(40)
+    expect(heightAt(e.masses, e.softening, e.exaggeration, 4, -2)).toBeCloseTo(heightAt(c.masses, c.softening, c.exaggeration, 2, -1), 10)
+    expect(expanded(c, 1, c.pooled)).toBe(c)
+  })
+})

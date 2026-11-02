@@ -43,5 +43,9 @@ export const OneSheetConfig = z.object({
   pooled: z.number().min(0).max(1).default(0.5),
   /** height of the topside ridge raised by a fully pooled drain, per unit black-hole mass */
   ridge: z.number().min(0).max(5).default(0.25),
+  /** expansion: fractional growth of the scale factor per second while playing (0 = static) */
+  expandRate: z.number().min(0).max(1).default(0),
+  /** how fast `pooled` rises per second while playing (0 = static) */
+  poolRate: z.number().min(0).max(1).default(0),
 })
 export type OneSheetConfig = z.infer<typeof OneSheetConfig>

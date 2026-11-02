@@ -100,6 +100,15 @@ export function heightField(cfg: OneSheetConfig): HeightField {
   return { n, size, h, slope, min, maxSlope }
 }
 
+/**
+ * The field as it stands at scale factor `scale` with `pooled` underside energy: galaxy positions and
+ * the sheet scale with space, the wells (softening) and throats do not. Positions only; no dynamics.
+ */
+export function expanded(cfg: OneSheetConfig, scale: number, pooled: number): OneSheetConfig {
+  if (scale === 1 && pooled === cfg.pooled) return cfg
+  return { ...cfg, masses: cfg.masses.map((m) => ({ ...m, x: m.x * scale, y: m.y * scale })), sheetSize: cfg.sheetSize * scale, pooled }
+}
+
 /** Total sheet height at a point: wells from the masses plus the ridge from pooled underside energy. */
 export function totalHeightAt(cfg: OneSheetConfig, ds: readonly Drain[], x: number, y: number): number {
   return heightAt(cfg.masses, cfg.softening, cfg.exaggeration, x, y) + ridgeAt(cfg, ds, x, y)

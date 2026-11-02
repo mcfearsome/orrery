@@ -1,10 +1,13 @@
 import { OrbitControls } from '@react-three/drei'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import * as Comlink from 'comlink'
 import { useEffect, useMemo, useRef, useState, type ComponentRef, type RefObject } from 'react'
 import * as THREE from 'three'
 import { Axes, Chart, Line, defaultFrame, linearScale } from '../cosmology/charts'
-import { crossSection, drains, heightField, totalHeightAt, type Drain, type HeightField } from './model'
+import { crossSection, drains, expanded, totalHeightAt, type Drain, type HeightField } from './model'
+import { PRESETS } from './presets'
 import { OneSheetConfig, type PointMass } from './schema'
+import type { OneSheetWorkerApi } from './worker'
 
 /** Topside is neutral and dark; the underside and anything drained through carry the one accent. */
 const C = { bg: '#0b0e14', top: '#39465f', wire: '#8793b3', under: '#e8b864', flow: '#ffe3a3', mass: '#d8dde8', slice: '#e8b864' }
@@ -12,27 +15,15 @@ const C = { bg: '#0b0e14', top: '#39465f', wire: '#8793b3', under: '#e8b864', fl
 // ponytail: drains are passed to the particle shader as a fixed uniform array; raise if a preset needs more
 const MAX_DRAINS = 64
 
-/** One surface. Vertex-colour alpha fades where |∇h| is high (stretched thin) and is 0 inside a drain's throat: a real hole. */
-function sheetGeometry(f: HeightField, translucency: number, ds: readonly Drain[]): THREE.BufferGeometry {
-  const { n, size, h, slope, maxSlope } = f
-  const pos = new Float32Array(n * n * 3)
-  const col = new Float32Array(n * n * 4)
-  const step = size / (n - 1)
-  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
-    const v = j * n + i
-    const x = -size / 2 + i * step, y = -size / 2 + j * step
-    pos[v * 3] = x
-    pos[v * 3 + 1] = h[v]
-    pos[v * 3 + 2] = y
-    const t = maxSlope > 0 ? slope[v] / maxSlope : 0
-    let a = 1 - translucency * t * t * (3 - 2 * t)
-    for (const d of ds) {
-      const r = Math.hypot(x - d.x, y - d.y) / d.throat
-      if (r < 1.8) a *= r <= 1 ? 0 : (r - 1) / 0.8
-    }
-    col[v * 4] = col[v * 4 + 1] = col[v * 4 + 2] = 1
-    col[v * 4 + 3] = a
-  }
+function createWorkerApi(): Comlink.Remote<OneSheetWorkerApi> {
+  return Comlink.wrap<OneSheetWorkerApi>(new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }))
+}
+
+/** Animation state lives outside React: it changes every frame. */
+export interface Anim { scale: number; pooled: number; playing: boolean }
+
+/** Grid geometry for `n` vertices per side; positions and colours are filled in by `applyField`. */
+function gridGeometry(n: number): THREE.BufferGeometry {
   const idx = new Uint32Array((n - 1) * (n - 1) * 6)
   let k = 0
   for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
@@ -41,40 +32,39 @@ function sheetGeometry(f: HeightField, translucency: number, ds: readonly Drain[
     idx[k++] = b; idx[k++] = c; idx[k++] = d
   }
   const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
-  g.setAttribute('color', new THREE.BufferAttribute(col, 4))
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * n * 3), 3))
+  g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * n * 4).fill(1), 4))
   g.setIndex(new THREE.BufferAttribute(idx, 1))
-  g.computeVertexNormals()
+  g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6)
   return g
 }
 
-function Sheet({ field, translucency, ds }: { field: HeightField; translucency: number; ds: readonly Drain[] }) {
-  const geo = useMemo(() => sheetGeometry(field, translucency, ds), [field, translucency, ds])
-  useEffect(() => () => geo.dispose(), [geo])
-  return (
-    <group>
-      {/* topside: front faces, lit from above */}
-      <mesh geometry={geo}>
-        <meshStandardMaterial color={C.top} roughness={0.95} metalness={0} side={THREE.FrontSide} vertexColors transparent alphaTest={0.02} polygonOffset polygonOffsetFactor={1} />
-      </mesh>
-      {/* underside: back faces of the same geometry, lit from below in the accent */}
-      <mesh geometry={geo}>
-        <meshStandardMaterial color="#3a3222" emissive={C.under} emissiveIntensity={0.05} roughness={0.9} metalness={0} side={THREE.BackSide} vertexColors transparent alphaTest={0.02} polygonOffset polygonOffsetFactor={1} />
-      </mesh>
-      <mesh geometry={geo}>
-        <meshBasicMaterial color={C.wire} wireframe transparent opacity={0.16} depthWrite={false} />
-      </mesh>
-    </group>
-  )
-}
-
-/** The height field as a float texture so the particle shader can hug the surface. */
-function heightTexture(f: HeightField): THREE.DataTexture {
-  // nearest: linear filtering of 32-bit float textures needs an extension not every GPU has; the shader interpolates itself
-  const t = new THREE.DataTexture(f.h, f.n, f.n, THREE.RedFormat, THREE.FloatType)
-  t.minFilter = t.magFilter = THREE.NearestFilter
-  t.needsUpdate = true
-  return t
+/**
+ * Write a height field into the grid. Vertex-colour alpha fades where |∇h| is high (the sheet is
+ * stretched thin) and is 0 inside a drain's throat, which with alphaTest is a real hole.
+ */
+function applyField(g: THREE.BufferGeometry, f: HeightField, translucency: number, ds: readonly Drain[]) {
+  const { n, size, h, slope, maxSlope } = f
+  const pos = g.getAttribute('position') as THREE.BufferAttribute
+  const col = g.getAttribute('color') as THREE.BufferAttribute
+  const p = pos.array as Float32Array, c = col.array as Float32Array
+  const step = size / (n - 1)
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const v = j * n + i
+    const x = -size / 2 + i * step, y = -size / 2 + j * step
+    p[v * 3] = x
+    p[v * 3 + 1] = h[v]
+    p[v * 3 + 2] = y
+    const t = maxSlope > 0 ? slope[v] / maxSlope : 0
+    let a = 1 - translucency * t * t * (3 - 2 * t)
+    for (const d of ds) {
+      const r = Math.hypot(x - d.x, y - d.y) / d.throat
+      if (r < 1.8) a *= r <= 1 ? 0 : (r - 1) / 0.8
+    }
+    c[v * 4 + 3] = a
+  }
+  pos.needsUpdate = col.needsUpdate = true
+  g.computeVertexNormals()
 }
 
 const DRAIN_VERT = /* glsl */ `
@@ -133,29 +123,8 @@ void main() {
   gl_FragColor = vec4(uColor, a * vAlpha);
 }`
 
-/** Stateless GPU particles: each has a seed and a drain; position is a pure function of time. Nothing to integrate. */
-function DrainFlow({ cfg, field, ds }: { cfg: OneSheetConfig; field: HeightField; ds: readonly Drain[] }) {
-  const dpr = useThree((s) => s.viewport.dpr)
-  const n = cfg.particles
-  const geo = useMemo(() => {
-    const g = new THREE.BufferGeometry()
-    const seed = new Float32Array(n * 4)
-    for (let i = 0; i < seed.length; i++) seed[i] = Math.random()
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3))
-    g.setAttribute('aSeed', new THREE.BufferAttribute(seed, 4))
-    g.setAttribute('aDrain', new THREE.BufferAttribute(new Float32Array(n), 1))
-    g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6)
-    return g
-  }, [n])
-  useEffect(() => {
-    const a = geo.getAttribute('aDrain') as THREE.BufferAttribute
-    const k = Math.max(1, ds.length)
-    for (let i = 0; i < n; i++) a.setX(i, i % k)
-    a.needsUpdate = true
-  }, [geo, ds, n])
-  useEffect(() => () => geo.dispose(), [geo])
-
-  const mat = useMemo(() => new THREE.ShaderMaterial({
+function drainMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
     vertexShader: DRAIN_VERT,
     fragmentShader: DRAIN_FRAG,
     transparent: true,
@@ -166,28 +135,136 @@ function DrainFlow({ cfg, field, ds }: { cfg: OneSheetConfig; field: HeightField
       uHeight: { value: null }, uColor: { value: new THREE.Color(C.flow) },
       uDrain: { value: Array.from({ length: MAX_DRAINS }, () => new THREE.Vector4()) },
     },
-  }), [])
-  useEffect(() => () => mat.dispose(), [mat])
+  })
+}
 
-  const tex = useMemo(() => heightTexture(field), [field])
+/** Stateless GPU particles: a seed and a drain index each; position is a pure function of time. */
+function particleGeometry(n: number, nDrains: number): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry()
+  const seed = new Float32Array(n * 4)
+  for (let i = 0; i < seed.length; i++) seed[i] = Math.random()
+  const drain = new Float32Array(n)
+  for (let i = 0; i < n; i++) drain[i] = i % Math.max(1, nDrains)
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3))
+  g.setAttribute('aSeed', new THREE.BufferAttribute(seed, 4))
+  g.setAttribute('aDrain', new THREE.BufferAttribute(drain, 1))
+  g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6)
+  return g
+}
+
+/** Current field as the renderer last applied it: what the markers and the chart follow. */
+export interface Applied { cfg: OneSheetConfig; ds: Drain[]; scale: number; pooled: number }
+
+/**
+ * The sheet, the drain flow and the markers. The height field is computed in a worker; while playing,
+ * the scale factor and pooled fraction advance every frame and a new field is requested as soon as the
+ * previous one lands, so rendering never waits on the CPU.
+ */
+function Surface({ cfg, anim, onTick }: { cfg: OneSheetConfig; anim: RefObject<Anim>; onTick: (a: Applied) => void }) {
+  const [api] = useState(createWorkerApi)
+  const dpr = useThree((s) => s.viewport.dpr)
+  const n = cfg.resolution
+  const geo = useMemo(() => gridGeometry(n), [n])
+  const tex = useMemo(() => {
+    // nearest: linear filtering of 32-bit float textures needs an extension not every GPU has; the shader interpolates itself
+    const t = new THREE.DataTexture(new Float32Array(n * n), n, n, THREE.RedFormat, THREE.FloatType)
+    t.minFilter = t.magFilter = THREE.NearestFilter
+    return t
+  }, [n])
+  const mat = useMemo(drainMaterial, [])
+  const nDrains = drains(cfg).length
+  const pgeo = useMemo(() => particleGeometry(cfg.particles, nDrains), [cfg.particles, nDrains])
+  useEffect(() => () => geo.dispose(), [geo])
   useEffect(() => () => tex.dispose(), [tex])
+  useEffect(() => () => mat.dispose(), [mat])
+  useEffect(() => () => pgeo.dispose(), [pgeo])
 
-  useEffect(() => {
-    const u = mat.uniforms
-    u.uHeight.value = tex
-    u.uSize.value = cfg.sheetSize
-    u.uN.value = field.n
-    u.uSpread.value = cfg.spread
-    u.uPx.value = 1.8 * dpr
-    // lifetime so that flux per drain = leakRate: particles per drain / rate, kept in a watchable range
-    u.uLife.value = THREE.MathUtils.clamp(n / Math.max(1, ds.length) / cfg.leakRate, 2, 60)
-    ds.slice(0, MAX_DRAINS).forEach((d, i) => u.uDrain.value[i].set(d.x, d.y, d.throat, totalHeightAt(cfg, ds, d.x, d.y)))
-  }, [mat, tex, field.n, cfg, ds, n, dpr])
+  const applied = useRef<Applied | null>(null)
+  const dirty = useRef(true)
+  const pending = useRef(false)
+  const lastTick = useRef(0)
+  useEffect(() => { dirty.current = true }, [cfg, geo, tex])
 
-  useFrame((s) => { mat.uniforms.uTime.value = s.clock.elapsedTime })
-  if (ds.length === 0) return null
-  // drawn after the sheet: the points write no depth, so an earlier draw would be painted over
-  return <points geometry={geo} material={mat} frustumCulled={false} renderOrder={1} />
+  const markers = useRef<(THREE.Mesh | null)[]>([])
+
+  useFrame((s, dt) => {
+    const a = anim.current
+    if (a.playing && (cfg.expandRate > 0 || cfg.poolRate > 0)) {
+      a.scale *= 1 + cfg.expandRate * Math.min(dt, 0.1)
+      a.pooled = Math.min(1, a.pooled + cfg.poolRate * Math.min(dt, 0.1))
+      dirty.current = true
+    }
+    mat.uniforms.uTime.value = s.clock.elapsedTime
+
+    if (dirty.current && !pending.current) {
+      dirty.current = false
+      pending.current = true
+      const { scale, pooled } = a
+      const myGeo = geo, myTex = tex
+      api.field(cfg, scale, pooled).then((f) => {
+        if (myGeo !== geo || f.n !== n) return // resolution changed mid-flight
+        const eff = expanded(cfg, scale, pooled)
+        const ds = drains(eff)
+        applyField(myGeo, f, cfg.translucency, ds)
+        myTex.image.data = f.h
+        myTex.needsUpdate = true
+        const u = mat.uniforms
+        u.uHeight.value = myTex
+        u.uSize.value = f.size
+        u.uN.value = f.n
+        u.uSpread.value = cfg.spread
+        u.uPx.value = 1.8 * dpr
+        // lifetime so that flux per drain = leakRate: particles per drain / rate, kept in a watchable range
+        u.uLife.value = THREE.MathUtils.clamp(cfg.particles / Math.max(1, ds.length) / cfg.leakRate, 2, 60)
+        ds.slice(0, MAX_DRAINS).forEach((d, i) => u.uDrain.value[i].set(d.x, d.y, d.throat, totalHeightAt(eff, ds, d.x, d.y)))
+        applied.current = { cfg: eff, ds, scale, pooled }
+        if (s.clock.elapsedTime - lastTick.current > 0.25) { lastTick.current = s.clock.elapsedTime; onTick(applied.current) }
+      }).finally(() => { pending.current = false })
+    }
+
+    // markers follow the applied field
+    const ap = applied.current
+    if (ap) ap.cfg.masses.forEach((m, i) => {
+      const mesh = markers.current[i]
+      if (!mesh) return
+      const h = totalHeightAt(ap.cfg, ap.ds, m.x, m.y)
+      const bh = m.m >= ap.cfg.bhThreshold
+      mesh.position.set(m.x, h + (bh ? 0.02 : (0.12 + 0.12 * Math.cbrt(m.m)) * 0.6), m.y)
+    })
+  })
+
+  const throat = cfg.throat * cfg.softening
+  return (
+    <group>
+      {/* topside: front faces, lit from above */}
+      <mesh geometry={geo}>
+        <meshStandardMaterial color={C.top} roughness={0.95} metalness={0} side={THREE.FrontSide} vertexColors transparent alphaTest={0.02} polygonOffset polygonOffsetFactor={1} />
+      </mesh>
+      {/* underside: back faces of the same geometry, lit from below in the accent */}
+      <mesh geometry={geo}>
+        <meshStandardMaterial color="#3a3222" emissive={C.under} emissiveIntensity={0.05} roughness={0.9} metalness={0} side={THREE.BackSide} vertexColors transparent alphaTest={0.02} polygonOffset polygonOffsetFactor={1} />
+      </mesh>
+      <mesh geometry={geo}>
+        <meshBasicMaterial color={C.wire} wireframe transparent opacity={0.16} depthWrite={false} />
+      </mesh>
+      {/* drawn after the sheet: the points write no depth, so an earlier draw would be painted over */}
+      {nDrains > 0 && <points geometry={pgeo} material={mat} frustumCulled={false} renderOrder={1} />}
+      {cfg.masses.map((m, i) =>
+        m.m >= cfg.bhThreshold ? (
+          // a black hole: no body, just the ring at the throat
+          <mesh key={i} ref={(el) => { markers.current[i] = el }} rotation={[Math.PI / 2, 0, 0]}>
+            <torusGeometry args={[throat, Math.max(0.015, throat * 0.08), 8, 48]} />
+            <meshStandardMaterial color={C.under} emissive={C.under} emissiveIntensity={0.9} roughness={0.4} />
+          </mesh>
+        ) : (
+          <mesh key={i} ref={(el) => { markers.current[i] = el }}>
+            <sphereGeometry args={[0.12 + 0.12 * Math.cbrt(m.m), 24, 16]} />
+            <meshStandardMaterial color={C.mass} roughness={0.6} />
+          </mesh>
+        ),
+      )}
+    </group>
+  )
 }
 
 type OrbitControlsImpl = ComponentRef<typeof OrbitControls>
@@ -205,42 +282,21 @@ function Viewpoint({ view, size, controls }: { view: View; size: number; control
   return null
 }
 
-function Scene({ cfg, field, ds, sliceY, view }: { cfg: OneSheetConfig; field: HeightField; ds: readonly Drain[]; sliceY: number | null; view: View }) {
+function Scene({ cfg, anim, onTick, sliceY, view }: { cfg: OneSheetConfig; anim: RefObject<Anim>; onTick: (a: Applied) => void; sliceY: number | null; view: View }) {
   const controls = useRef<OrbitControlsImpl>(null)
   return (
     <>
       <color attach="background" args={[C.bg]} />
-      <fog attach="fog" args={[C.bg, cfg.sheetSize * 1.4, cfg.sheetSize * 4]} />
+      <fog attach="fog" args={[C.bg, cfg.sheetSize * 1.4, cfg.sheetSize * 5]} />
       <hemisphereLight args={['#9fb3d9', '#0b0e14', 0.55]} />
       <directionalLight position={[8, 14, 6]} intensity={1.1} />
       {/* underside light: only back faces see it */}
       <directionalLight position={[-4, -12, 3]} intensity={0.9} color={C.under} />
       <pointLight position={[0, -cfg.sheetSize * 0.5, 0]} intensity={cfg.sheetSize * 2.5} color={C.under} decay={2} />
-      <Sheet field={field} translucency={cfg.translucency} ds={ds} />
-      <DrainFlow cfg={cfg} field={field} ds={ds} />
-      {cfg.masses.map((m, i) => {
-        const h = totalHeightAt(cfg, ds, m.x, m.y)
-        if (m.m >= cfg.bhThreshold) {
-          // a black hole: no body, just the ring at the throat
-          const t = cfg.throat * cfg.softening
-          return (
-            <mesh key={i} position={[m.x, h + 0.02, m.y]} rotation={[Math.PI / 2, 0, 0]}>
-              <torusGeometry args={[t, Math.max(0.015, t * 0.08), 8, 48]} />
-              <meshStandardMaterial color={C.under} emissive={C.under} emissiveIntensity={0.9} roughness={0.4} />
-            </mesh>
-          )
-        }
-        const r = 0.12 + 0.12 * Math.cbrt(m.m)
-        return (
-          <mesh key={i} position={[m.x, h + r * 0.6, m.y]}>
-            <sphereGeometry args={[r, 24, 16]} />
-            <meshStandardMaterial color={C.mass} roughness={0.6} />
-          </mesh>
-        )
-      })}
+      <Surface cfg={cfg} anim={anim} onTick={onTick} />
       {sliceY !== null && (
-        <mesh position={[0, field.min / 2, sliceY]}>
-          <planeGeometry args={[cfg.sheetSize, Math.abs(field.min) + 3]} />
+        <mesh position={[0, -cfg.exaggeration * 2, sliceY]}>
+          <planeGeometry args={[cfg.sheetSize * 2, cfg.exaggeration * 8 + 3]} />
           <meshBasicMaterial color={C.slice} transparent opacity={0.1} side={THREE.DoubleSide} depthWrite={false} />
         </mesh>
       )}
@@ -271,19 +327,31 @@ function SliceChart({ cfg, sliceY }: { cfg: OneSheetConfig; sliceY: number }) {
 }
 
 const rnd = (a: number, b: number) => a + Math.random() * (b - a)
+const fmt = (v: number, d = 2) => v.toFixed(d)
 
-type NumKey = 'exaggeration' | 'softening' | 'translucency' | 'sheetSize' | 'resolution' | 'bhThreshold' | 'throat' | 'leakRate' | 'particles' | 'spread' | 'pooled' | 'ridge'
+type NumKey = 'exaggeration' | 'softening' | 'translucency' | 'sheetSize' | 'resolution' | 'bhThreshold' | 'throat' | 'leakRate' | 'particles' | 'spread' | 'pooled' | 'ridge' | 'expandRate' | 'poolRate'
 
 export function OneSheetPanel() {
+  const [preset, setPreset] = useState<string>('default')
   const [cfg, setCfg] = useState<OneSheetConfig>(() => OneSheetConfig.parse({}))
   const [slice, setSlice] = useState(false)
   const [sliceY, setSliceY] = useState(0)
   const [view, setView] = useState<View>('topside')
-  const field = useMemo(() => heightField(cfg), [cfg])
-  const ds = useMemo(() => drains(cfg), [cfg])
+  const [playing, setPlaying] = useState(false)
+  const anim = useRef<Anim>({ scale: 1, pooled: cfg.pooled, playing: false })
+  const [tick, setTick] = useState<Applied | null>(null)
+
   const set = (patch: Partial<OneSheetConfig>) => setCfg((c) => OneSheetConfig.parse({ ...c, ...patch }))
   const setMass = (i: number, patch: Partial<PointMass>) => set({ masses: cfg.masses.map((m, j) => (j === i ? { ...m, ...patch } : m)) })
   const scatter = (n: number) => set({ masses: Array.from({ length: n }, () => ({ x: rnd(-0.4, 0.4) * cfg.sheetSize, y: rnd(-0.4, 0.4) * cfg.sheetSize, m: rnd(0.3, 3) })) })
+  const reset = (c = cfg) => { anim.current.scale = 1; anim.current.pooled = c.pooled }
+  const loadPreset = (id: string) => {
+    const c = OneSheetConfig.parse(PRESETS[id] ?? {})
+    setPreset(id)
+    setCfg(c)
+    reset(c)
+  }
+  const togglePlay = () => { anim.current.playing = !playing; setPlaying(!playing) }
 
   const slider = (key: NumKey, label: string, min: number, max: number, step: number) => (
     <div className="row" key={key}>
@@ -292,16 +360,39 @@ export function OneSheetPanel() {
       <input type="number" min={min} max={max} step={step} value={cfg[key]} onChange={(e) => set({ [key]: Number(e.target.value) })} />
     </div>
   )
+  const nDrains = drains(cfg).length
+  const chartCfg = tick ? tick.cfg : cfg
 
   return (
     <div className="layout">
       <aside className="sidebar">
         <div className="card">
+          <h2>Preset</h2>
+          <div className="row">
+            <label>preset</label>
+            <select className="select" value={preset} onChange={(e) => loadPreset(e.target.value)}>
+              {Object.keys(PRESETS).map((id) => <option key={id} value={id}>{id}</option>)}
+            </select>
+          </div>
+          {slider('expandRate', 'expand/s', 0, 0.3, 0.005)}
+          {slider('poolRate', 'pool/s', 0, 0.3, 0.005)}
+          <div className="btns">
+            <button className={`btn${playing ? ' primary' : ''}`} onClick={togglePlay}>{playing ? 'pause' : 'play'}</button>
+            <button className="btn" onClick={() => reset()}>reset</button>
+          </div>
+          <table className="readouts">
+            <tbody>
+              <tr><td>scale factor</td><td>{tick ? fmt(tick.scale, 3) : '1.000'}</td></tr>
+              <tr><td>pooled</td><td>{tick ? fmt(tick.pooled) : fmt(cfg.pooled)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div className="card">
           <h2>Sheet</h2>
           {slider('exaggeration', 'exag', 0, 6, 0.05)}
           {slider('softening', 'soften', 0.1, 5, 0.05)}
           {slider('translucency', 'thin', 0, 1, 0.05)}
-          {slider('sheetSize', 'size', 8, 80, 1)}
+          {slider('sheetSize', 'size', 8, 120, 1)}
           {slider('resolution', 'res', 16, 400, 8)}
           <div className="btns">
             <button className={`btn${view === 'topside' ? ' primary' : ''}`} onClick={() => setView('topside')}>topside</button>
@@ -320,7 +411,7 @@ export function OneSheetPanel() {
           <p className="note">One surface, two sides. h(x, y) is a softened Newtonian potential (not GR): a well seen from the topside, a hill from the underside. Orbit below the sheet to see the dark side. The sheet thins where it is stretched.</p>
         </div>
         <div className="card">
-          <h2>Drains <span className="tag">{ds.length} black hole{ds.length === 1 ? '' : 's'}</span></h2>
+          <h2>Drains <span className="tag">{nDrains} black hole{nDrains === 1 ? '' : 's'}</span></h2>
           {slider('bhThreshold', 'BH ≥ m', 0.1, 10, 0.1)}
           {slider('throat', 'throat', 0.05, 3, 0.05)}
           {slider('leakRate', 'rate /s', 1, 20000, 1)}
@@ -328,7 +419,7 @@ export function OneSheetPanel() {
           {slider('spread', 'spread', 0.5, 30, 0.5)}
           {slider('pooled', 'pooled', 0, 1, 0.01)}
           {slider('ridge', 'ridge', 0, 2, 0.01)}
-          <p className="note">A mass at or above the threshold tears the sheet: energy drains DOWN through the throat and spreads on the underside, settling about <code>spread</code> away. What pools there pulls the sheet toward the underside's own down, which is our up: a ridge on the topside between galaxies, scaled by <code>pooled × ridge</code>.</p>
+          <p className="note">A mass at or above the threshold tears the sheet: energy drains DOWN through the throat and spreads on the underside, settling about <code>spread</code> away. What pools there pulls the sheet toward the underside's own down, which is our up: a ridge on the topside between galaxies, scaled by <code>pooled × ridge</code>. While playing, <code>pooled</code> rises at <code>pool/s</code> and positions expand at <code>expand/s</code>.</p>
         </div>
         <div className="card">
           <h2>Masses <span className="tag">{cfg.masses.length}</span></h2>
@@ -354,14 +445,14 @@ export function OneSheetPanel() {
       </aside>
       <main className="main">
         <div className="card canvas-card">
-          <Canvas camera={{ position: [0, cfg.sheetSize * 0.45, cfg.sheetSize * 1.1], fov: 40, near: 0.1, far: cfg.sheetSize * 10 }} dpr={[1, 2]}>
-            <Scene cfg={cfg} field={field} ds={ds} sliceY={slice ? sliceY : null} view={view} />
+          <Canvas camera={{ position: [0, cfg.sheetSize * 0.45, cfg.sheetSize * 1.1], fov: 40, near: 0.1, far: cfg.sheetSize * 12 }} dpr={[1, 2]}>
+            <Scene cfg={cfg} anim={anim} onTick={setTick} sliceY={slice ? sliceY : null} view={view} />
           </Canvas>
         </div>
         {slice && (
           <div className="card">
             <h2>Cross-section <span className="tag">one curve; above it is the topside, below it the underside</span></h2>
-            <SliceChart cfg={cfg} sliceY={sliceY} />
+            <SliceChart cfg={chartCfg} sliceY={sliceY} />
           </div>
         )}
       </main>
