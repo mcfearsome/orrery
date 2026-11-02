@@ -390,3 +390,179 @@ export function nelderMead(fn: (x: number[]) => number, x0: number[], opts: NMOp
   }
   return { x: simplex[0].x, f: simplex[0].f, iterations: iter, evaluations: evals, converged }
 }
+
+// ---------------------------------------------------------------------------
+// Early-universe pieces for the CMB and BAO priors. Physical densities ω = Ω h²
+// are what the CMB fixes, so everything here is written in those.
+//   ω_γ for T_CMB = 2.7255 K; radiation includes N_eff = 3.046 massless neutrinos.
+// ---------------------------------------------------------------------------
+
+export const OMEGA_GAMMA = 2.4728e-5
+export const N_EFF = 3.046
+export const OMEGA_RADIATION = OMEGA_GAMMA * (1 + 0.2271 * N_EFF) // 4.1834e-5
+
+/** Ωr for a given H0 (km/s/Mpc), so that the physical radiation density is fixed. */
+export function omegaRadiation(H0: number): number {
+  const h = H0 / 100
+  return OMEGA_RADIATION / (h * h)
+}
+
+/** Decoupling redshift, Hu & Sugiyama 1996 (ApJ 471, 542) fitting formula. */
+export function zStar(omegaB: number, omegaM: number): number {
+  const g1 = (0.0783 * omegaB ** -0.238) / (1 + 39.5 * omegaB ** 0.763)
+  const g2 = 0.56 / (1 + 21.1 * omegaB ** 1.81)
+  return 1048 * (1 + 0.00124 * omegaB ** -0.738) * (1 + g1 * omegaM ** g2)
+}
+
+/** Drag epoch, Eisenstein & Hu 1998 (ApJ 496, 605) eq. 4. */
+export function zDrag(omegaB: number, omegaM: number): number {
+  const b1 = 0.313 * omegaM ** -0.419 * (1 + 0.607 * omegaM ** 0.674)
+  const b2 = 0.238 * omegaM ** 0.223
+  return (1291 * omegaM ** 0.251 / (1 + 0.659 * omegaM ** 0.828)) * (1 + b1 * omegaB ** b2)
+}
+
+/**
+ * Comoving sound horizon r_s(z) in Mpc:  r_s = ∫_0^{a(z)} c_s / (a² H) da,
+ * c_s = c / sqrt(3 (1 + R_b)),  R_b = 3 ω_b a / (4 ω_γ).
+ * Simpson in ln a from a = 1e-8. E(z) must include radiation for this to be right.
+ */
+export function soundHorizonMpc(E: Expansion, H0: number, omegaB: number, z: number, steps = 4000): number {
+  const xMin = Math.log(1e-8), xMax = -Math.log(1 + z)
+  const h = (xMax - xMin) / steps
+  const f = (x: number) => {
+    const a = Math.exp(x)
+    const Rb = (3 * omegaB * a) / (4 * OMEGA_GAMMA)
+    const cs = C_KM_S / Math.sqrt(3 * (1 + Rb))
+    return cs / (a * H0 * E(1 / a - 1)) // da/(a² H) with da = a dx
+  }
+  let s = 0
+  for (let i = 0; i <= steps; i++) s += (i === 0 || i === steps ? 1 : i % 2 ? 4 : 2) * f(xMin + i * h)
+  return (s * h) / 3
+}
+
+/** Comoving distance in Mpc to any z, including beyond the distance table (Simpson in ln(1+z)). */
+export function comovingDistanceMpc(E: Expansion, H0: number, z: number, steps = 4000): number {
+  const uMax = Math.log(1 + z)
+  const h = uMax / steps
+  let s = 0
+  for (let i = 0; i <= steps; i++) {
+    const u = i * h
+    const zz = Math.exp(u) - 1
+    s += (i === 0 || i === steps ? 1 : i % 2 ? 4 : 2) * ((1 + zz) / E(zz)) // dz = (1+z) du
+  }
+  return ((s * h) / 3) * (C_KM_S / H0)
+}
+
+export interface CMBPriorObs {
+  R: number
+  lA: number
+  zStar: number
+  rsStar: number
+  DMStar: number
+}
+
+/**
+ * Shift parameter R = sqrt(ω_m) · 100 · D_M(z*) / c  and acoustic scale l_A = π D_M(z*) / r_s(z*).
+ * Flat models only (D_M = D_C). omegaM is the physical matter density Ω_m h² of the model.
+ */
+export function cmbDistancePriors(E: Expansion, H0: number, omegaM: number, omegaB: number): CMBPriorObs {
+  const zs = zStar(omegaB, omegaM)
+  const DM = comovingDistanceMpc(E, H0, zs)
+  const rs = soundHorizonMpc(E, H0, omegaB, zs)
+  return { R: (Math.sqrt(omegaM) * 100 * DM) / C_KM_S, lA: (Math.PI * DM) / rs, zStar: zs, rsStar: rs, DMStar: DM }
+}
+
+/** χ² of (R, l_A) against a 2×2 prior with correlation ρ. */
+export function chi2Gaussian2(d1: number, s1: number, d2: number, s2: number, rho: number): number {
+  const det = 1 - rho * rho
+  return (d1 * d1 / (s1 * s1) + d2 * d2 / (s2 * s2) - (2 * rho * d1 * d2) / (s1 * s2)) / det
+}
+
+export interface BAOPoint {
+  z: number
+  /** D_M/r_d with error, or null when only D_V is measured */
+  DM?: [number, number]
+  DH?: [number, number]
+  DV?: [number, number]
+  /** correlation between the D_M and D_H measurements */
+  rMH?: number
+  label: string
+}
+
+export interface BAOPrediction { z: number; DM: number; DH: number; DV: number }
+
+/** Model BAO observables at z, divided by r_d (Mpc). */
+export function baoPredict(E: Expansion, H0: number, rd: number, z: number): BAOPrediction {
+  const DM = comovingDistanceMpc(E, H0, z, 2000)
+  const DH = C_KM_S / (H0 * E(z))
+  const DV = Math.cbrt(z * DM * DM * DH)
+  return { z, DM: DM / rd, DH: DH / rd, DV: DV / rd }
+}
+
+export function baoChi2(points: BAOPoint[], preds: BAOPrediction[]): number {
+  let chi2 = 0
+  points.forEach((p, i) => {
+    const m = preds[i]
+    if (p.DM && p.DH) chi2 += chi2Gaussian2(m.DM - p.DM[0], p.DM[1], m.DH - p.DH[0], p.DH[1], p.rMH ?? 0)
+    else if (p.DV) chi2 += ((m.DV - p.DV[0]) / p.DV[1]) ** 2
+  })
+  return chi2
+}
+
+// ---------------------------------------------------------------------------
+// Anchored early-universe quantities.
+//
+// The fitting formulas above and our massless-neutrino radiation term land
+// within 0.1–0.3% of the exact Planck 2018 values, which is 2–10σ for the
+// priors. So each quantity is anchored: the model's own integral or formula is
+// multiplied by a constant that makes it exact for the Planck 2018
+// TT,TE,EE+lowE+lensing best fit (Planck 2018 VI, Table 2), and the model's
+// physics carries the variation away from it. Models that change only the
+// late-time expansion (the leak is 0.2% of matter at z = 6) are well served.
+// ---------------------------------------------------------------------------
+
+export const PLANCK18_FIDUCIAL = {
+  H0: 67.36, Om: 0.3153, omegaB: 0.02237,
+  zStar: 1089.92, rsStar: 144.43, zDrag: 1059.94, rd: 147.09,
+  /** D_M(z*) implied by l_A = 301.471 and r_s* = 144.43 */
+  DMStar: (301.471 * 144.43) / Math.PI,
+} as const
+
+export interface EarlyUniverse {
+  zStar: number
+  zDrag: number
+  /** comoving sound horizon at decoupling and at the drag epoch, Mpc */
+  rsStar: number
+  rd: number
+  /** comoving distance to decoupling, Mpc */
+  DMStar: number
+  R: number
+  lA: number
+}
+
+interface Anchors { zStar: number; zDrag: number; rs: number; DM: number }
+let anchors: Anchors | null = null
+function getAnchors(): Anchors {
+  if (anchors) return anchors
+  const F = PLANCK18_FIDUCIAL
+  const h = F.H0 / 100, om = F.Om * h * h
+  const E = lcdmE({ H0: F.H0, Om: F.Om, Or: omegaRadiation(F.H0), Ok: 0 })
+  anchors = {
+    zStar: F.zStar / zStar(F.omegaB, om),
+    zDrag: F.zDrag / zDrag(F.omegaB, om),
+    rs: F.rsStar / soundHorizonMpc(E, F.H0, F.omegaB, F.zStar),
+    DM: F.DMStar / comovingDistanceMpc(E, F.H0, F.zStar),
+  }
+  return anchors
+}
+
+/** z*, z_d, r_s*, r_d, D_M(z*), R and l_A for a flat model; omegaM is its physical matter density Ω_m h². */
+export function earlyUniverse(E: Expansion, H0: number, omegaM: number, omegaB: number): EarlyUniverse {
+  const k = getAnchors()
+  const zs = zStar(omegaB, omegaM) * k.zStar
+  const zd = zDrag(omegaB, omegaM) * k.zDrag
+  const rsStar = soundHorizonMpc(E, H0, omegaB, zs) * k.rs
+  const rd = soundHorizonMpc(E, H0, omegaB, zd) * k.rs
+  const DMStar = comovingDistanceMpc(E, H0, zs) * k.DM
+  return { zStar: zs, zDrag: zd, rsStar, rd, DMStar, R: (Math.sqrt(omegaM) * 100 * DMStar) / C_KM_S, lA: (Math.PI * DMStar) / rsStar }
+}

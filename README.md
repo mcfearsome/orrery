@@ -72,6 +72,28 @@ analytically (χ² = A − B²/C). The TypeScript pipeline reproduces the publis
 ΛCDM fit: Ωm = 0.332 (Brout et al. 2022: 0.334 ± 0.018), χ² = 1402.9 for 1590 SNe. That
 number is locked in `pantheon.test.ts`.
 
+### Module 1.1 · CMB and BAO priors
+
+Supernovae alone cannot separate a late-rising constant from Λ, so the likelihood can add
+two external priors (`src/sims/cosmology/priors.ts`, both off by default in the UI):
+
+- **CMB:** Planck 2018 TT,TE,EE+lowE compressed distance priors (R, ℓ_A) with their
+  correlation, from Chen, Huang & Wang 2019 (JCAP 02, 028), ω_b held at the Planck mean.
+- **BAO:** DESI DR2 (Abdul-Karim et al. 2025, arXiv:2503.14738) Table 4, seven bins of
+  D_M/r_d, D_H/r_d (with their per-bin correlation) and D_V/r_d for BGS.
+
+`model.ts: earlyUniverse` computes z*, z_drag, r_s*, r_d and D_M(z*) from the model's own
+expansion history, using the Hu & Sugiyama and Eisenstein & Hu fitting formulas and a
+Simpson sound-horizon integral, each anchored by a constant factor so that the Planck 2018
+best fit reproduces Planck's exact values (the raw formulas are 0.1–3% off, which is many σ
+for these priors). This is valid for models that change only the late-time expansion; the
+leak component is 0.2% of matter at z = 6. Locked in `priors.test.ts`: the DESI BAO-alone
+flat ΛCDM fit returns Ωm = 0.2975 (published 0.2975 ± 0.0086) and the SN+CMB+BAO ΛCDM fit
+returns Ωm = 0.302, H0 = 68.3 (DESI+CMB published: 0.3027 ± 0.0036, 68.17 ± 0.28).
+
+With priors on, the fits vary Ωm (and H0 for ΛCDM). The scene export carries every χ²
+component and the (R, ℓ_A, r_d) of both models.
+
 ### Not in v1
 
 No WebGPU, no N-body, no backend, no auth. The data are never re-weighted to the model.

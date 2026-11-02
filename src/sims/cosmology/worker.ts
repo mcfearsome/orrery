@@ -2,21 +2,31 @@
 import * as Comlink from 'comlink'
 import { fetchPantheonPlus } from './data'
 import {
+  baoChi2,
+  baoPredict,
   bhFormationRateNormalised,
   bhMassFraction,
+  chi2Gaussian2,
   chi2Marginalised,
   distanceModulus,
+  earlyUniverse,
   integrateLeak,
   lcdmDistanceTable,
+  lcdmE,
   lcdmLambda,
   leakDistanceTable,
   leakE,
   leakOmegaAt,
   modelMu,
   nelderMead,
+  omegaRadiation,
+  type BAOPrediction,
   type Chi2Result,
+  type EarlyUniverse,
+  type Expansion,
   type SNSample,
 } from './model'
+import { DESI_DR2_BAO, PLANCK18_DISTANCE_PRIORS as P18 } from './priors'
 import { CosmologyConfig, FitBounds, LCDMParams, LeakModelParams, type LeakParams } from './schema'
 
 let sample: SNSample | null = null
@@ -46,6 +56,61 @@ export interface Evaluation {
   omegaMFrac: number
   /** ΛCDM minus leak expansion ratio E_leak/E_lcdm on zGrid */
   eRatio: number[]
+  /** external priors, per model */
+  priorsLcdm: PriorScore
+  priorsLeak: PriorScore
+  /** BAO observables on a z grid for plotting */
+  baoGrid: number[]
+  baoCurveLcdm: { DM: number[]; DH: number[] }
+  baoCurveLeak: { DM: number[]; DH: number[] }
+  /** total χ² = SN + enabled priors */
+  totalLcdm: number
+  totalLeak: number
+}
+
+export interface PriorScore {
+  early: EarlyUniverse
+  chi2CMB: number
+  chi2BAO: number
+  bao: BAOPrediction[]
+}
+
+/** CMB + BAO scores for one expansion history. omegaM is the physical matter density of the model. */
+function scorePriors(E: Expansion, H0: number, omegaM: number, omegaB: number): PriorScore {
+  const early = earlyUniverse(E, H0, omegaM, omegaB)
+  const chi2CMB = chi2Gaussian2(early.R - P18.R, P18.Rerr, early.lA - P18.lA, P18.lAerr, P18.rho)
+  const bao = DESI_DR2_BAO.map((p) => baoPredict(E, H0, early.rd, p.z))
+  return { early, chi2CMB, chi2BAO: baoChi2(DESI_DR2_BAO, bao), bao }
+}
+
+/** Fill in the radiation density from H0 so the physical radiation density is always Planck's. */
+function withRadiation(cfg: CosmologyConfig): CosmologyConfig {
+  return {
+    ...cfg,
+    lcdm: { ...cfg.lcdm, Or: omegaRadiation(cfg.lcdm.H0) },
+    leak: { ...cfg.leak, Or: omegaRadiation(cfg.leak.H0) },
+  }
+}
+
+const omegaMOf = (Om: number, H0: number) => Om * (H0 / 100) ** 2
+
+function totalWithPriors(cfg: CosmologyConfig, chi2SN: number, ps: PriorScore): number {
+  return chi2SN + (cfg.priors.cmb ? ps.chi2CMB : 0) + (cfg.priors.bao ? ps.chi2BAO : 0)
+}
+
+function scoreLcdm(cfg: CosmologyConfig, s: SNSample) {
+  const t = lcdmDistanceTable(cfg.lcdm)
+  const sn = chi2Marginalised(s, modelMu(t, s), cfg.fullCovariance)
+  const ps = scorePriors(lcdmE(cfg.lcdm), cfg.lcdm.H0, omegaMOf(cfg.lcdm.Om, cfg.lcdm.H0), cfg.omegaB)
+  return { sn, ps, total: totalWithPriors(cfg, sn.chi2, ps) }
+}
+
+function scoreLeak(cfg: CosmologyConfig, s: SNSample) {
+  const hist = integrateLeak(cfg.leak.leak)
+  const E = leakE(cfg.leak, hist)
+  const sn = chi2Marginalised(s, modelMu(leakDistanceTable(cfg.leak), s), cfg.fullCovariance)
+  const ps = scorePriors(E, cfg.leak.H0, omegaMOf(cfg.leak.Om, cfg.leak.H0), cfg.omegaB)
+  return { sn, ps, total: totalWithPriors(cfg, sn.chi2, ps), hist, E }
 }
 
 function zGrid(): number[] {
@@ -67,7 +132,7 @@ const api = {
 
   evaluate(rawConfig: unknown): Evaluation {
     if (!sample) throw new Error('data not loaded')
-    const cfg = CosmologyConfig.parse(rawConfig)
+    const cfg = withRadiation(CosmologyConfig.parse(rawConfig))
     const tL = lcdmDistanceTable(cfg.lcdm)
     const hist = integrateLeak(cfg.leak.leak)
     const E = leakE(cfg.leak, hist)
@@ -80,7 +145,16 @@ const api = {
     const chi2Lcdm = chi2Marginalised(sample, lcdmAtData, cfg.fullCovariance)
     const chi2Leak = chi2Marginalised(sample, leakAtData, cfg.fullCovariance)
     const E0 = E(0)
-    const EL = (z: number) => Math.sqrt(cfg.lcdm.Or * (1 + z) ** 4 + cfg.lcdm.Om * (1 + z) ** 3 + cfg.lcdm.Ok * (1 + z) ** 2 + lcdmLambda(cfg.lcdm))
+    const EL = lcdmE(cfg.lcdm)
+    const priorsLcdm = scorePriors(EL, cfg.lcdm.H0, omegaMOf(cfg.lcdm.Om, cfg.lcdm.H0), cfg.omegaB)
+    const priorsLeak = scorePriors(E, cfg.leak.H0, omegaMOf(cfg.leak.Om, cfg.leak.H0), cfg.omegaB)
+    const baoGrid: number[] = []
+    for (let z = 0.1; z <= 2.5001; z += 0.05) baoGrid.push(Number(z.toFixed(3)))
+    const curve = (Ex: Expansion, H0: number, rd: number) => {
+      const DM: number[] = [], DH: number[] = []
+      for (const z of baoGrid) { const b = baoPredict(Ex, H0, rd, z); DM.push(b.DM); DH.push(b.DH) }
+      return { DM, DH }
+    }
     return {
       zGrid: zs,
       lcdm,
@@ -99,43 +173,57 @@ const api = {
       omegaLeak0Frac: hist.omega0 / (E0 * E0),
       omegaMFrac: cfg.leak.Om / (E0 * E0),
       eRatio: zs.map((z) => E(z) / EL(z)),
+      priorsLcdm,
+      priorsLeak,
+      baoGrid,
+      baoCurveLcdm: curve(EL, cfg.lcdm.H0, priorsLcdm.early.rd),
+      baoCurveLeak: curve(E, cfg.leak.H0, priorsLeak.early.rd),
+      totalLcdm: totalWithPriors(cfg, chi2Lcdm.chi2, priorsLcdm),
+      totalLeak: totalWithPriors(cfg, chi2Leak.chi2, priorsLeak),
     }
   },
 
-  /** Minimise the leak model's χ² over (α, β, γ). Reports progress through the callback. */
+  /** Minimise the leak model's total χ² over (α, β, γ) and, with fitDensities, Ωm. Reports progress through the callback. */
   fitLeak(rawConfig: unknown, rawBounds?: unknown, onProgress?: (iter: number, x: number[], chi2: number) => void) {
     if (!sample) throw new Error('data not loaded')
-    const cfg = CosmologyConfig.parse(rawConfig)
+    const cfg = withRadiation(CosmologyConfig.parse(rawConfig))
     const bounds = FitBounds.parse(rawBounds ?? {})
     const s = sample
-    const f = ([alpha, beta, gamma]: number[]) => {
-      const p = LeakModelParams.parse({ ...cfg.leak, leak: { alpha, beta, gamma } })
-      return chi2Marginalised(s, modelMu(leakDistanceTable(p), s), cfg.fullCovariance).chi2
+    const withOm = cfg.fitDensities
+    const f = ([alpha, beta, gamma, Om]: number[]) => {
+      const leak = LeakModelParams.parse({ ...cfg.leak, Om: withOm ? Om : cfg.leak.Om, leak: { alpha, beta, gamma } })
+      return scoreLeak({ ...cfg, leak }, s).total
     }
     const start: LeakParams = cfg.leak.leak
     let every = 0
-    const r = nelderMead(f, [start.alpha, start.beta, start.gamma], {
-      bounds: [bounds.alpha, bounds.beta, bounds.gamma],
-      initialStep: [Math.max(0.01, 0.5 * start.alpha), 0.5, 0.5],
+    const x0 = [start.alpha, start.beta, start.gamma, ...(withOm ? [cfg.leak.Om] : [])]
+    const r = nelderMead(f, x0, {
+      bounds: [bounds.alpha, bounds.beta, bounds.gamma, ...(withOm ? [[0.05, 0.9] as [number, number]] : [])],
+      initialStep: [Math.max(0.01, 0.5 * start.alpha), 0.5, 0.5, ...(withOm ? [0.03] : [])],
       tolF: 1e-7,
       tolX: 1e-5,
-      maxIter: 1500,
+      maxIter: 2500,
       onIter: (i, x, fb) => { if (onProgress && every++ % 5 === 0) onProgress(i, x, fb) },
     })
-    return { alpha: r.x[0], beta: r.x[1], gamma: r.x[2], chi2: r.f, iterations: r.iterations, evaluations: r.evaluations, converged: r.converged }
+    return { alpha: r.x[0], beta: r.x[1], gamma: r.x[2], Om: withOm ? r.x[3] : cfg.leak.Om, chi2: r.f, iterations: r.iterations, evaluations: r.evaluations, converged: r.converged }
   },
 
-  /** Minimise flat ΛCDM χ² over Ωm (the textbook fit). */
+  /** Minimise flat ΛCDM total χ² over Ωm, and over H0 too when a prior that constrains it is on (SN alone cannot). */
   fitLcdmOm(rawConfig: unknown) {
     if (!sample) throw new Error('data not loaded')
-    const cfg = CosmologyConfig.parse(rawConfig)
+    const cfg = withRadiation(CosmologyConfig.parse(rawConfig))
     const s = sample
-    const r = nelderMead(
-      ([Om]) => chi2Marginalised(s, modelMu(lcdmDistanceTable(LCDMParams.parse({ ...cfg.lcdm, Om, Ok: 0 })), s), cfg.fullCovariance).chi2,
-      [cfg.lcdm.Om],
-      { bounds: [[0.02, 0.95]], initialStep: [0.05], tolF: 1e-8, tolX: 1e-5 },
-    )
-    return { Om: r.x[0], chi2: r.f }
+    const withH0 = cfg.fitDensities && (cfg.priors.cmb || cfg.priors.bao)
+    const f = ([Om, H0]: number[]) => {
+      const lcdm = LCDMParams.parse({ ...cfg.lcdm, Om, Ok: 0, H0: withH0 ? H0 : cfg.lcdm.H0, Or: omegaRadiation(withH0 ? H0 : cfg.lcdm.H0) })
+      return scoreLcdm({ ...cfg, lcdm }, s).total
+    }
+    const r = nelderMead(f, [cfg.lcdm.Om, ...(withH0 ? [cfg.lcdm.H0] : [])], {
+      bounds: [[0.02, 0.95], ...(withH0 ? [[50, 90] as [number, number]] : [])],
+      initialStep: [0.05, ...(withH0 ? [2] : [])],
+      tolF: 1e-8, tolX: 1e-5, maxIter: 1000,
+    })
+    return { Om: r.x[0], H0: withH0 ? r.x[1] : cfg.lcdm.H0, chi2: r.f }
   },
 }
 

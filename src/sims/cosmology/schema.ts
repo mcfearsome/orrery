@@ -44,6 +44,17 @@ export const CosmologyConfig = z.object({
   zMin: z.number().min(0).default(0.01),
   /** χ² uses the full STAT+SYS covariance when true, diagonal errors otherwise */
   fullCovariance: z.boolean().default(true),
+  /** external distance priors added to χ² */
+  priors: z.object({
+    /** Planck 2018 (R, l_A) compressed CMB priors */
+    cmb: z.boolean().default(false),
+    /** DESI DR2 BAO D_M/r_d, D_H/r_d, D_V/r_d */
+    bao: z.boolean().default(false),
+  }).default(() => ({ cmb: false, bao: false })),
+  /** physical baryon density Ω_b h², held fixed (Planck 2018) */
+  omegaB: z.number().positive().default(0.02236),
+  /** also vary Ωm (and H0 for ΛCDM) in the fits */
+  fitDensities: z.boolean().default(true),
 })
 export type CosmologyConfig = z.infer<typeof CosmologyConfig>
 
