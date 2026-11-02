@@ -125,6 +125,17 @@ intervals, the integrated autocorrelation time τ per parameter, acceptance rate
 30% burn-in is discarded. One likelihood evaluation takes about 5 ms, so 32 walkers × 600
 steps is a couple of minutes in the browser.
 
+### Module 1.4 · alternative supernova samples
+
+The Data card selects which supernova sample enters χ²: Pantheon+ SH0ES (default), DES-SN5YR
+Dovekie (1820 SNe, `data/des_y5`), Union3 / UNITY1.5 (22 binned nodes, `data/union3`), or none
+(CMB + BAO only). All three use the same likelihood: full covariance through a Cholesky
+factor and an analytically marginalised magnitude offset. The two extra samples are prepared
+by `scripts/prepare-sn-extra.py` (Python, because the releases ship `.npz` and `.fits`; never
+part of the shipped tool). Each dataset directory has a README with sources, citations and
+what was done to the files. Sanity checks in `samples.test.ts`: flat ΛCDM alone gives
+Ωm = 0.330 on DES Dovekie and 0.356 on Union3 (published 0.356 +0.028/−0.026).
+
 ### Not in v1
 
 No WebGPU, no N-body, no backend, no auth. The data are never re-weighted to the model.
