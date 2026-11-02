@@ -363,7 +363,8 @@ function ResidualPanel({ data, ev }: { data: Data | null; ev: Evaluation | null 
   const x = useMemo(() => logScale(0.009, 2.4, fr.l, fr.w - fr.r), [fr.l, fr.w, fr.r])
   const y = useMemo(() => linearScale(-0.6, 0.6, fr.h - fr.b, fr.t, 6), [fr.h, fr.b, fr.t])
   const res = useMemo(() => {
-    if (!data || !ev) return null
+    // during a sample switch the evaluation can lag the data by one render
+    if (!data || !ev || ev.lcdmAtData.length !== data.mu.length) return null
     const dL = ev.chi2Lcdm.deltaM, dK = ev.chi2Leak.deltaM
     const r = data.mu.map((m, i) => m - ev.lcdmAtData[i] - dL)
     return { r, b: binned(data.z, r, data.muErr), leak: ev.leak.map((m, i) => m + dK - ev.lcdm[i] - dL) }
