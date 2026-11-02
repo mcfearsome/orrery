@@ -64,3 +64,16 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 .check { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; margin: 6px 0; }
 .note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
 code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); padding: 1px 4px; border-radius: 4px; }
+
+.tabs { display: flex; gap: 4px; }
+.tab { color: var(--muted); text-decoration: none; padding: 4px 10px; border-radius: 6px; font-size: 13px; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); background: var(--panel-2); }
+.canvas-card { padding: 0; overflow: hidden; height: 600px; }
+.canvas-card canvas { display: block; }
+.masses td { padding: 2px 3px; }
+.masses input[type=number] { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 5px; font-family: var(--mono); font-size: 12px; }
+.masses .btn { padding: 2px 7px; }
+.masses tr.bh td:first-child input { border-color: var(--accent); }
+.capture { position: fixed; inset: 0; background: var(--bg); }
+.capture canvas { display: block; }
