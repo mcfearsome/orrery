@@ -220,6 +220,7 @@ export function CosmologyPanel() {
           <div className="btns">
             <button className="btn primary" disabled={!data || fitting || mcRunning} onClick={runMcmc}>Run MCMC from current point</button>
             <button className="btn" disabled={!mcRunning} onClick={() => { mcStop.current = true }}>Stop</button>
+            <button className="btn" disabled={!mc || mcRunning} onClick={() => { if (!mc) return; const m = mc.summaries; setCfg((c) => ({ ...c, leak: { ...c.leak, Om: m.Om?.median ?? c.leak.Om, leak: { alpha: m.alpha?.median ?? c.leak.leak.alpha, beta: m.beta?.median ?? (mcOpts.freeBeta ? c.leak.leak.beta : 0), gamma: m.gamma?.median ?? c.leak.leak.gamma } } })) }}>Use medians</button>
           </div>
           {mc && (
             <table className="readouts" style={{ marginTop: 8 }}>
