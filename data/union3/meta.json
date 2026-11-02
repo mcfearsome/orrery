@@ -1,0 +1,14 @@
+{
+  "source": "https://github.com/rubind/union3_release (mu_mat_union3_cosmo=2_mu.fits)",
+  "files": {
+    "fits": "mu_mat_union3_cosmo=2_mu.fits"
+  },
+  "sha256": {
+    "fits": "ef98b7dde1025ee7134f3242aaea3f1f0ed3f2b29a718458c550a8e4e24d0349"
+  },
+  "zMin": 0.0,
+  "nTotal": 22,
+  "note": "UNITY1.5 compressed distance moduli at 22 spline nodes with their inverse covariance; zHEL set to the node z",
+  "nKept": 22,
+  "cholLowerPackedLength": 253
+}

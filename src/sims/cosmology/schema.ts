@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import { BH_HISTORY_IDS } from './bhHistories'
 
+export const SN_SAMPLE_IDS = ['pantheon_plus', 'des_y5', 'union3', 'none'] as const
+export type SNSampleId = (typeof SN_SAMPLE_IDS)[number]
+
 /** Flat/curved ΛCDM background. Fractions are relative to the critical density at H0. */
 export const LCDMParams = z.object({
   /** km/s/Mpc */
@@ -43,6 +46,8 @@ export type LeakModelParams = z.infer<typeof LeakModelParams>
 export const CosmologyConfig = z.object({
   lcdm: LCDMParams.default(() => LCDMParams.parse({})),
   leak: LeakModelParams.default(() => LeakModelParams.parse({})),
+  /** which supernova sample enters χ²; 'none' gives the CMB + BAO-only case */
+  snSample: z.enum(SN_SAMPLE_IDS).default('pantheon_plus'),
   /** redshift cut applied to the supernova sample (Pantheon+ cosmology analyses use 0.01) */
   zMin: z.number().min(0).default(0.01),
   /** χ² uses the full STAT+SYS covariance when true, diagonal errors otherwise */

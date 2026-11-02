@@ -1,0 +1,16 @@
+{
+  "source": "https://github.com/des-science/DES-SN5YR (4_DISTANCES_COVMAT, Dovekie release)",
+  "files": {
+    "hd": "DES-Dovekie_HD.csv",
+    "cov": "STAT+SYS.npz (inverse covariance, upper triangle)"
+  },
+  "sha256": {
+    "hd": "2f57019d783eaa976df80a41b0054171a2d994ee9808d715ce850c2df5720aaf",
+    "cov": "ffd3124b32148b1372bd95fda9299269f0352a9f8eee02d416c610e38495463b"
+  },
+  "zMin": 0.0,
+  "nTotal": 1820,
+  "note": "all SNe kept, as in the DES likelihood; MU assumes H0 = 70 and M is marginalised",
+  "nKept": 1820,
+  "cholLowerPackedLength": 1657110
+}

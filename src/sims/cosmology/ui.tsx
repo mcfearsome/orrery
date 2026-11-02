@@ -3,8 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Scene } from '../../scenes/schema'
 import { Axes, Chart, ErrorPoints, Line, clipId, defaultFrame, linearScale, logScale } from './charts'
 import { BH_HISTORY_IDS, BH_HISTORY_LABELS } from './bhHistories'
+import { SN_SAMPLES } from './data'
 import { DESI_DR2_BAO } from './priors'
-import { CosmologyConfig, type LeakParams } from './schema'
+import { CosmologyConfig, SN_SAMPLE_IDS, type LeakParams } from './schema'
 import type { CosmologyWorkerApi, Evaluation, McmcProgress } from './worker'
 
 type Data = { z: number[]; mu: number[]; muErr: number[]; cid: string[] }
@@ -50,6 +51,29 @@ export function CosmologyPanel() {
     return () => { alive = false }
   }, [api])
 
+  // load the selected sample on demand, then refresh the plotted points
+  const [sampleReady, setSampleReady] = useState<string>('pantheon_plus')
+  useEffect(() => {
+    if (!data) return
+    const id = cfg.snSample
+    let alive = true
+    ;(async () => {
+      try {
+        if (id !== 'none' && !(await api.isLoaded(id))) {
+          setStatus(`loading ${SN_SAMPLES[id].label} …`)
+          const r = await api.loadSample(id)
+          if (!alive) return
+          setStatus(`${r.n} ${id === 'union3' ? 'binned nodes' : 'SNe Ia'} loaded (${r.hasCovariance ? 'full covariance' : 'diagonal'})`)
+        }
+        const sm = await api.sampleSummary(id)
+        if (!alive) return
+        if (sm) setData(sm)
+        setSampleReady(id)
+      } catch (e) { if (alive) setStatus(`sample error: ${String(e)}`) }
+    })()
+    return () => { alive = false }
+  }, [api, cfg.snSample, data === null])
+
   // evaluate on every config change; latest wins
   const evaluate = useCallback(async (c: CosmologyConfig) => {
     if (pending.current) { queued.current = c; return }
@@ -64,7 +88,7 @@ export function CosmologyPanel() {
       if (queued.current) { const q = queued.current; queued.current = null; void evaluate(q) }
     }
   }, [api])
-  useEffect(() => { if (data) void evaluate(cfg) }, [cfg, data, evaluate])
+  useEffect(() => { if (data && sampleReady === cfg.snSample) void evaluate(cfg) }, [cfg, data, evaluate, sampleReady])
 
   const setLeak = (patch: Partial<LeakParams>) => setCfg((c) => ({ ...c, leak: { ...c.leak, leak: { ...c.leak.leak, ...patch } } }))
   const setLcdm = (patch: Partial<CosmologyConfig['lcdm']>) => setCfg((c) => ({ ...c, lcdm: { ...c.lcdm, ...patch } }))
@@ -197,7 +221,13 @@ export function CosmologyPanel() {
           <p className="note">Source: dρ/dt = α·ṁ_BH·(1+z)^β, dilution (1+z)^γ. β = 0, γ = 0 is the untuned, Λ-like-dilution law. Ωm ref is the physical matter density in units of ρ_crit(H0 = {cfg.leak.H0}).</p>
         </div>
         <div className="card">
-          <h2>External priors <span className="tag muted">added to χ²</span></h2>
+          <h2>Data <span className="tag muted">supernova sample + external priors</span></h2>
+          <div className="row">
+            <label>SNe</label>
+            <select className="select" value={cfg.snSample} onChange={(e) => setCfg((c) => ({ ...c, snSample: e.target.value as typeof c.snSample }))}>
+              {SN_SAMPLE_IDS.map((id) => <option key={id} value={id}>{id === 'none' ? 'none (CMB + BAO only)' : SN_SAMPLES[id].label}</option>)}
+            </select>
+          </div>
           <label className="check">
             <input type="checkbox" checked={cfg.priors.cmb} onChange={(e) => setCfg((c) => ({ ...c, priors: { ...c.priors, cmb: e.target.checked } }))} />
             Planck 2018 CMB distance priors (R, ℓ_A)
@@ -234,7 +264,7 @@ export function CosmologyPanel() {
           <p className="note">Start from a best fit. Walkers ≈ 8× parameters, steps ≳ 50 τ; the 30% burn-in is discarded. Flat priors: α ∈ (0, 5], β ∈ [−4, 8], γ ∈ [−1, 5], Ωm ∈ [0.05, 0.9].</p>
         </div>
         <div className="card">
-          <h2>Readouts <span className="tag muted">{ev ? `n = ${ev.chi2Lcdm.n}, dof = ${dof}` : ''}</span></h2>
+          <h2>Readouts <span className="tag muted">{ev ? `n_SN = ${ev.chi2Lcdm.n}` : ''}</span></h2>
           <table className="readouts">
             <thead><tr><th /><th className="lcdm">ΛCDM</th><th className="leak">leak</th></tr></thead>
             <tbody>
@@ -297,7 +327,7 @@ function HubbleDiagram({ data, ev, cfg }: { data: Data | null; ev: Evaluation | 
   return (
     <div className="card">
       <h2>Hubble diagram <span className="tag muted">distance modulus vs redshift, models shifted by their marginalised ΔM</span></h2>
-      <Legend items={[{ color: COL.data, label: 'Pantheon+ SH0ES' }, { color: COL.lcdm, label: `flat ΛCDM Ωm = ${cfg.lcdm.Om.toFixed(3)}` }, { color: COL.leak, label: 'black-hole leak model' }]} />
+      <Legend items={[{ color: COL.data, label: cfg.snSample === 'none' ? 'no supernovae in χ²' : SN_SAMPLES[cfg.snSample].label }, { color: COL.lcdm, label: `flat ΛCDM Ωm = ${cfg.lcdm.Om.toFixed(3)}` }, { color: COL.leak, label: 'black-hole leak model' }]} />
       <Chart fr={fr} title="Hubble diagram">
         <Axes fr={fr} x={x} y={y} xLabel="redshift z (Hubble-diagram frame)" yLabel="μ [mag]" />
         <g clipPath={clipId(fr)}>

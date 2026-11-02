@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import * as Comlink from 'comlink'
-import { fetchPantheonPlus } from './data'
+import { fetchPantheonPlus, fetchSample, SN_SAMPLES } from './data'
 import { EnsembleSampler, histogram, mulberry32, summarise, type ParamSummary } from './mcmc'
 import { bhHistory } from './model'
 import {
@@ -28,9 +28,21 @@ import {
   type SNSample,
 } from './model'
 import { DESI_DR2_BAO, PLANCK18_DISTANCE_PRIORS as P18 } from './priors'
-import { CosmologyConfig, FitBounds, LCDMParams, LeakModelParams, type LeakParams } from './schema'
+import { CosmologyConfig, FitBounds, LCDMParams, LeakModelParams, type LeakParams, type SNSampleId } from './schema'
 
 let sample: SNSample | null = null
+const samples = new Map<SNSampleId, SNSample>()
+let dataBase = 'pantheon_plus'
+let cholFileName = 'chol_lower.f32'
+
+/** The sample the config asks for, or an empty one for the CMB + BAO-only case. */
+function sampleFor(cfg: CosmologyConfig): SNSample {
+  if (cfg.snSample === 'none') return EMPTY_SAMPLE
+  const s = samples.get(cfg.snSample)
+  if (!s) throw new Error(`sample ${cfg.snSample} not loaded`)
+  return s
+}
+const EMPTY_SAMPLE: SNSample = { cid: [], z: new Float64Array(0), zHel: new Float64Array(0), mu: new Float64Array(0), muErr: new Float64Array(0), cholLower: null }
 
 interface McmcState { sampler: EnsembleSampler; names: string[]; freeBeta: boolean; cfg: CosmologyConfig }
 let mcmc: McmcState | null = null
@@ -122,9 +134,12 @@ function totalWithPriors(cfg: CosmologyConfig, chi2SN: number, ps: PriorScore): 
   return chi2SN + (cfg.priors.cmb ? ps.chi2CMB : 0) + (cfg.priors.bao ? ps.chi2BAO : 0)
 }
 
+const ZERO_CHI2: Chi2Result = { chi2: 0, deltaM: 0, n: 0, chi2Diag: 0, deltaMDiag: 0 }
+const snChi2 = (s: SNSample, mu: Float64Array, full: boolean): Chi2Result => (s.z.length ? chi2Marginalised(s, mu, full) : ZERO_CHI2)
+
 function scoreLcdm(cfg: CosmologyConfig, s: SNSample) {
   const t = lcdmDistanceTable(cfg.lcdm)
-  const sn = chi2Marginalised(s, modelMu(t, s), cfg.fullCovariance)
+  const sn = snChi2(s, modelMu(t, s), cfg.fullCovariance)
   const ps = scorePriors(lcdmE(cfg.lcdm), cfg.lcdm.H0, omegaMOf(cfg.lcdm.Om, cfg.lcdm.H0), cfg.omegaB, t)
   return { sn, ps, total: totalWithPriors(cfg, sn.chi2, ps) }
 }
@@ -133,7 +148,7 @@ function scoreLeak(cfg: CosmologyConfig, s: SNSample) {
   const hist = integrateLeak(cfg.leak.leak, 1000, bhHistory(cfg.leak.bhHistory))
   const E = leakE(cfg.leak, hist)
   const t = leakDistanceTable(cfg.leak, 2.6, hist)
-  const sn = chi2Marginalised(s, modelMu(t, s), cfg.fullCovariance)
+  const sn = snChi2(s, modelMu(t, s), cfg.fullCovariance)
   const ps = scorePriors(E, cfg.leak.H0, omegaMOf(cfg.leak.Om, cfg.leak.H0), cfg.omegaB, t)
   return { sn, ps, total: totalWithPriors(cfg, sn.chi2, ps), hist, E }
 }
@@ -146,18 +161,36 @@ function zGrid(): number[] {
 
 const api = {
   async loadData(base?: string, withCovariance = true, cholFile?: string): Promise<{ n: number; hasCovariance: boolean }> {
+    if (base) dataBase = base.replace(/\/pantheon_plus\/?$/, '')
+    if (cholFile) cholFileName = cholFile
     sample = await fetchPantheonPlus(base, withCovariance, cholFile)
+    samples.set('pantheon_plus', sample)
     return { n: sample.z.length, hasCovariance: !!sample.cholLower }
   },
 
-  sampleSummary(): { z: number[]; mu: number[]; muErr: number[]; cid: string[] } | null {
-    if (!sample) return null
-    return { z: Array.from(sample.z), mu: Array.from(sample.mu), muErr: Array.from(sample.muErr), cid: sample.cid }
+  /** Load another prepared sample (DES-Y5, Union3) on demand; served next to pantheon_plus. */
+  async loadSample(id: Exclude<SNSampleId, 'none'>): Promise<{ n: number; hasCovariance: boolean }> {
+    let s = samples.get(id)
+    if (!s) {
+      const dir = SN_SAMPLES[id].dir
+      const base = dataBase && dataBase !== 'pantheon_plus' ? `${dataBase}/${dir}` : dir
+      s = await fetchSample(base, true, cholFileName)
+      samples.set(id, s)
+    }
+    return { n: s.z.length, hasCovariance: !!s.cholLower }
+  },
+
+  isLoaded(id: SNSampleId): boolean { return id === 'none' || samples.has(id) },
+
+  sampleSummary(id: SNSampleId = 'pantheon_plus'): { z: number[]; mu: number[]; muErr: number[]; cid: string[] } | null {
+    const s = id === 'none' ? EMPTY_SAMPLE : samples.get(id)
+    if (!s) return null
+    return { z: Array.from(s.z), mu: Array.from(s.mu), muErr: Array.from(s.muErr), cid: s.cid }
   },
 
   evaluate(rawConfig: unknown): Evaluation {
-    if (!sample) throw new Error('data not loaded')
     const cfg = withRadiation(CosmologyConfig.parse(rawConfig))
+    const sample = sampleFor(cfg)
     const tL = lcdmDistanceTable(cfg.lcdm)
     const bh = bhHistory(cfg.leak.bhHistory)
     const hist = integrateLeak(cfg.leak.leak, 1000, bh)
@@ -168,8 +201,8 @@ const api = {
     const leak = zs.map((z) => distanceModulus(tK, z))
     const lcdmAtData = modelMu(tL, sample)
     const leakAtData = modelMu(tK, sample)
-    const chi2Lcdm = chi2Marginalised(sample, lcdmAtData, cfg.fullCovariance)
-    const chi2Leak = chi2Marginalised(sample, leakAtData, cfg.fullCovariance)
+    const chi2Lcdm = snChi2(sample, lcdmAtData, cfg.fullCovariance)
+    const chi2Leak = snChi2(sample, leakAtData, cfg.fullCovariance)
     const E0 = E(0)
     const EL = lcdmE(cfg.lcdm)
     const priorsLcdm = scorePriors(EL, cfg.lcdm.H0, omegaMOf(cfg.lcdm.Om, cfg.lcdm.H0), cfg.omegaB, tL)
@@ -211,10 +244,9 @@ const api = {
 
   /** Minimise the leak model's total χ² over (α, β, γ) and, with fitDensities, Ωm. Reports progress through the callback. */
   fitLeak(rawConfig: unknown, rawBounds?: unknown, onProgress?: (iter: number, x: number[], chi2: number) => void) {
-    if (!sample) throw new Error('data not loaded')
     const cfg = withRadiation(CosmologyConfig.parse(rawConfig))
     const bounds = FitBounds.parse(rawBounds ?? {})
-    const s = sample
+    const s = sampleFor(cfg)
     const withOm = cfg.fitDensities
     const f = ([alpha, beta, gamma, Om]: number[]) => {
       const leak = LeakModelParams.parse({ ...cfg.leak, Om: withOm ? Om : cfg.leak.Om, leak: { alpha, beta, gamma } })
@@ -236,9 +268,8 @@ const api = {
 
   // ---- MCMC: posterior over the leak parameters, advanced in chunks so the UI can stop it ----
   mcmcStart(rawConfig: unknown, opts: { nWalkers?: number; freeBeta?: boolean; seed?: number; spread?: number } = {}) {
-    if (!sample) throw new Error('data not loaded')
     const cfg = withRadiation(CosmologyConfig.parse(rawConfig))
-    const s = sample
+    const s = sampleFor(cfg)
     const freeBeta = opts.freeBeta ?? true
     const names = freeBeta ? ['alpha', 'beta', 'gamma', 'Om'] : ['alpha', 'gamma', 'Om']
     const unpack = (v: number[]) => (freeBeta ? v : [v[0], 0, v[1], v[2]])
@@ -281,9 +312,8 @@ const api = {
 
   /** Minimise flat ΛCDM total χ² over Ωm, and over H0 too when a prior that constrains it is on (SN alone cannot). */
   fitLcdmOm(rawConfig: unknown) {
-    if (!sample) throw new Error('data not loaded')
     const cfg = withRadiation(CosmologyConfig.parse(rawConfig))
-    const s = sample
+    const s = sampleFor(cfg)
     const withH0 = cfg.fitDensities && (cfg.priors.cmb || cfg.priors.bao)
     const f = ([Om, H0]: number[]) => {
       const lcdm = LCDMParams.parse({ ...cfg.lcdm, Om, Ok: 0, H0: withH0 ? H0 : cfg.lcdm.H0, Or: omegaRadiation(withH0 ? H0 : cfg.lcdm.H0) })
