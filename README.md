@@ -112,6 +112,19 @@ never increases with z, extrapolated with the end slope and cut at z = 30. The l
 the normalised rate per unit ln a, so α still absorbs the normalisation and only the shape
 matters. Tests check each history is monotone, starts at 1 and integrates to 1.
 
+### Module 1.3 · posteriors by MCMC
+
+`mcmc.ts` is a Goodman & Weare (2010) affine-invariant ensemble sampler (the emcee stretch
+move) with a seeded RNG, so runs are reproducible. The worker exposes it in chunks
+(`mcmcStart`, `mcmcStep`, `mcmcSamples`, `mcmcStop`) so the UI can stop between chunks. It
+samples (α, β, γ, Ωm), or (α, γ, Ωm) with β fixed at 0, under flat priors α ∈ (0, 5],
+β ∈ [−4, 8], γ ∈ [−1, 5], Ωm ∈ [0.05, 0.9], with the log-likelihood −χ²/2 of whatever
+SN / CMB / BAO combination is switched on. The Posterior card reports medians with 16–84%
+intervals, the integrated autocorrelation time τ per parameter, acceptance rate and the best
+χ² seen; the panel below the BAO plot shows any 2-D projection and the 1-D histogram. A
+30% burn-in is discarded. One likelihood evaluation takes about 5 ms, so 32 walkers × 600
+steps is a couple of minutes in the browser.
+
 ### Not in v1
 
 No WebGPU, no N-body, no backend, no auth. The data are never re-weighted to the model.
