@@ -25,8 +25,10 @@ export function galaxyField(n: number, size: number, minSep: number, seed = 7): 
 }
 
 export const PRESETS: Record<string, Partial<OneSheetConfig>> = {
-  /** three masses, one of them a black hole */
-  default: {},
+  /** step 1: three masses, no black hole */
+  sheet: { bhThreshold: 100 },
+  /** step 2: the same three masses, the heavy one a drain */
+  drain: {},
   /** s03: a galaxy field, every galaxy a drain, space expanding and the underside pooling */
   cosmic: {
     masses: galaxyField(40, 60, 6),

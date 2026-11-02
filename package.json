@@ -11,7 +11,8 @@
     "lint": "oxlint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "data:pantheon": "tsx scripts/prepare-pantheon.ts"
+    "data:pantheon": "tsx scripts/prepare-pantheon.ts",
+    "capture": "tsx scripts/capture.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
@@ -29,6 +30,7 @@
     "@types/three": "^0.183.0",
     "@vitejs/plugin-react": "^6.1.2",
     "oxlint": "^1.89.0",
+    "playwright-core": "^1.64.1",
     "tsx": "^4.21.0",
     "typescript": "~7.0.2",
     "vite": "^8.3.5",

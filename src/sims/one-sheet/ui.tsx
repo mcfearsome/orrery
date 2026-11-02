@@ -6,6 +6,7 @@ import * as THREE from 'three'
 import { Axes, Chart, Line, defaultFrame, linearScale } from '../cosmology/charts'
 import { crossSection, cyclePhase, drains, expanded, nestedSheet, totalHeightAt, type Drain, type HeightField } from './model'
 import { PRESETS } from './presets'
+import { sceneFromState } from './scene'
 import { OneSheetConfig, type PointMass } from './schema'
 import type { OneSheetWorkerApi } from './worker'
 
@@ -21,6 +22,13 @@ function createWorkerApi(): Comlink.Remote<OneSheetWorkerApi> {
 
 /** Animation state lives outside React: it changes every frame. */
 export interface Anim { scale: number; pooled: number; /** seconds into the nested-universe cycle */ t: number; playing: boolean }
+
+/**
+ * Capture mode (`?capture=<preset>`): the page is driven frame by frame from a script instead of the
+ * wall clock, so every frame is deterministic. `time`/`dt` replace the renderer clock; `pending` and
+ * `dirty` tell the driver when the worker's field has landed.
+ */
+export interface CaptureBus { time: number; dt: number; pending: boolean; dirty: boolean }
 
 /** Grid geometry for `n` vertices per side; positions and colours are filled in by `applyField`. */
 function gridGeometry(n: number): THREE.BufferGeometry {
@@ -205,7 +213,7 @@ export interface Applied { cfg: OneSheetConfig; ds: Drain[]; scale: number; pool
  * the scale factor and pooled fraction advance every frame and a new field is requested as soon as the
  * previous one lands, so rendering never waits on the CPU.
  */
-function Surface({ cfg, anim, onTick }: { cfg: OneSheetConfig; anim: RefObject<Anim>; onTick: (a: Applied) => void }) {
+function Surface({ cfg, anim, onTick, bus }: { cfg: OneSheetConfig; anim: RefObject<Anim>; onTick: (a: Applied) => void; bus?: CaptureBus }) {
   const [api] = useState(createWorkerApi)
   const dpr = useThree((s) => s.viewport.dpr)
   const n = cfg.resolution
@@ -243,15 +251,17 @@ function Surface({ cfg, anim, onTick }: { cfg: OneSheetConfig; anim: RefObject<A
 
   const markers = useRef<(THREE.Mesh | null)[]>([])
 
-  useFrame((s, dt) => {
+  useFrame((s, dtFrame) => {
     const a = anim.current
-    if (a.playing && (cfg.expandRate > 0 || cfg.poolRate > 0)) {
+    const dt = bus ? bus.dt : dtFrame
+    const now = bus ? bus.time : s.clock.elapsedTime
+    if (a.playing && dt > 0 && (cfg.expandRate > 0 || cfg.poolRate > 0)) {
       a.scale *= 1 + cfg.expandRate * Math.min(dt, 0.1)
       a.pooled = Math.min(1, a.pooled + cfg.poolRate * Math.min(dt, 0.1))
       dirty.current = true
     }
     if (a.playing && cfg.cycleDepth > 0) a.t += Math.min(dt, 0.1)
-    mat.uniforms.uTime.value = s.clock.elapsedTime
+    mat.uniforms.uTime.value = now
 
     // nested-universe cycle: child k unfurls on its parent once the parent's ocean has burst
     const cy = cyclePhase(a.t, cfg.cyclePeriod, cfg.cycleDepth)
@@ -302,12 +312,13 @@ function Surface({ cfg, anim, onTick }: { cfg: OneSheetConfig; anim: RefObject<A
         u.uLife.value = THREE.MathUtils.clamp(cfg.particles / Math.max(1, ds.length) / cfg.leakRate, 2, 60)
         ds.slice(0, MAX_DRAINS).forEach((d, i) => u.uDrain.value[i].set(d.x, d.y, d.throat, totalHeightAt(eff, ds, d.x, d.y)))
         applied.current = { cfg: eff, ds, scale, pooled, t: a.t }
-      }).finally(() => { pending.current = false })
+      }).finally(() => { pending.current = false; if (bus) bus.pending = false })
     }
-    if (applied.current && s.clock.elapsedTime - lastTick.current > 0.25) {
-      lastTick.current = s.clock.elapsedTime
+    if (applied.current && now - lastTick.current > 0.25) {
+      lastTick.current = now
       onTick({ ...applied.current, t: a.t })
     }
+    if (bus) { bus.pending = pending.current; bus.dirty = dirty.current }
 
     // markers follow the applied field
     const ap = applied.current
@@ -372,7 +383,49 @@ function Viewpoint({ view, size, controls }: { view: View; size: number; control
   return null
 }
 
-function Scene({ cfg, anim, onTick, sliceY, view }: { cfg: OneSheetConfig; anim: RefObject<Anim>; onTick: (a: Applied) => void; sliceY: number | null; view: View }) {
+/** What a capture script talks to: `window.__orrery`. */
+export interface CaptureApi {
+  ready: boolean
+  /** advance the animation by dt seconds, wait for the field, draw the frame */
+  step(dt: number): Promise<void>
+  /** camera on a sphere around the origin: elevation and azimuth in degrees (negative elevation is the underside) */
+  setCamera(elevationDeg: number, azimuthDeg: number, distance: number): void
+  play(on: boolean): void
+  scene(): string
+}
+
+function CaptureDriver({ bus, anim, cfg, preset }: { bus: CaptureBus; anim: RefObject<Anim>; cfg: OneSheetConfig; preset: string }) {
+  const advance = useThree((s) => s.advance)
+  const camera = useThree((s) => s.camera)
+  useEffect(() => {
+    const settled = () => new Promise<void>((resolve) => {
+      const poll = () => (bus.pending || bus.dirty ? setTimeout(poll, 4) : resolve())
+      poll()
+    })
+    const api: CaptureApi = {
+      ready: true,
+      async step(dt) {
+        bus.time += dt
+        bus.dt = dt
+        advance(performance.now())
+        bus.dt = 0
+        await settled()
+        advance(performance.now())
+      },
+      setCamera(el, az, dist) {
+        const e = (el * Math.PI) / 180, a = (az * Math.PI) / 180
+        camera.position.set(dist * Math.cos(e) * Math.sin(a), dist * Math.sin(e), dist * Math.cos(e) * Math.cos(a))
+        camera.lookAt(0, 0, 0)
+      },
+      play(on) { anim.current.playing = on },
+      scene: () => JSON.stringify(sceneFromState(cfg, anim.current, preset), null, 2),
+    }
+    ;(window as unknown as { __orrery: CaptureApi }).__orrery = api
+  }, [bus, anim, cfg, preset, advance, camera])
+  return null
+}
+
+function Scene({ cfg, anim, onTick, sliceY, view, capture }: { cfg: OneSheetConfig; anim: RefObject<Anim>; onTick: (a: Applied) => void; sliceY: number | null; view: View; capture?: { bus: CaptureBus; preset: string } }) {
   const controls = useRef<OrbitControlsImpl>(null)
   return (
     <>
@@ -383,15 +436,19 @@ function Scene({ cfg, anim, onTick, sliceY, view }: { cfg: OneSheetConfig; anim:
       {/* underside light: only back faces see it */}
       <directionalLight position={[-4, -12, 3]} intensity={0.9} color={C.under} />
       <pointLight position={[0, -cfg.sheetSize * 0.5, 0]} intensity={cfg.sheetSize * 2.5} color={C.under} decay={2} />
-      <Surface cfg={cfg} anim={anim} onTick={onTick} />
+      <Surface cfg={cfg} anim={anim} onTick={onTick} bus={capture?.bus} />
       {sliceY !== null && (
         <mesh position={[0, -cfg.exaggeration * 2, sliceY]}>
           <planeGeometry args={[cfg.sheetSize * 2, cfg.exaggeration * 8 + 3]} />
           <meshBasicMaterial color={C.slice} transparent opacity={0.1} side={THREE.DoubleSide} depthWrite={false} />
         </mesh>
       )}
-      <OrbitControls ref={controls} enableDamping dampingFactor={0.08} maxPolarAngle={Math.PI} />
-      <Viewpoint view={view} size={cfg.sheetSize} controls={controls} />
+      {capture ? <CaptureDriver bus={capture.bus} anim={anim} cfg={cfg} preset={capture.preset} /> : (
+        <>
+          <OrbitControls ref={controls} enableDamping dampingFactor={0.08} maxPolarAngle={Math.PI} />
+          <Viewpoint view={view} size={cfg.sheetSize} controls={controls} />
+        </>
+      )}
     </>
   )
 }
@@ -422,8 +479,12 @@ const fmt = (v: number, d = 2) => v.toFixed(d)
 type NumKey = 'exaggeration' | 'softening' | 'translucency' | 'sheetSize' | 'resolution' | 'bhThreshold' | 'throat' | 'leakRate' | 'particles' | 'spread' | 'pooled' | 'ridge' | 'expandRate' | 'poolRate' | 'cycleDepth' | 'cyclePeriod' | 'cycleShrink'
 
 export function OneSheetPanel() {
-  const [preset, setPreset] = useState<string>('default')
-  const [cfg, setCfg] = useState<OneSheetConfig>(() => OneSheetConfig.parse({}))
+  // `?capture=<preset>` renders only the canvas, driven by a script (see CaptureDriver)
+  const [captureId] = useState(() => new URLSearchParams(location.search).get('capture'))
+  const [bus] = useState<CaptureBus>(() => ({ time: 0, dt: 0, pending: false, dirty: false }))
+  const [preset, setPreset] = useState<string>(() => (captureId && captureId in PRESETS ? captureId : 'drain'))
+  const [cfg, setCfg] = useState<OneSheetConfig>(() => OneSheetConfig.parse(PRESETS[preset] ?? {}))
+  const [status, setStatus] = useState('')
   const [slice, setSlice] = useState(false)
   const [sliceY, setSliceY] = useState(0)
   const [view, setView] = useState<View>('topside')
@@ -442,6 +503,19 @@ export function OneSheetPanel() {
     reset(c)
   }
   const togglePlay = () => { anim.current.playing = !playing; setPlaying(!playing) }
+  const exportScene = () => {
+    const scene = sceneFromState(cfg, anim.current, preset)
+    const json = JSON.stringify(scene, null, 2)
+    // Copy first (works in sandboxed viewers that block downloads), then offer the file.
+    const copied = navigator.clipboard?.writeText(json).then(() => true, () => false) ?? Promise.resolve(false)
+    const blob = new Blob([json], { type: 'application/json' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `${scene.id}.json`
+    a.click()
+    URL.revokeObjectURL(a.href)
+    void copied.then((ok) => setStatus(`exported ${scene.id}.json (${scene.series.length} series)${ok ? ', copied to clipboard' : ''}`))
+  }
 
   const slider = (key: NumKey, label: string, min: number, max: number, step: number) => (
     <div className="row" key={key}>
@@ -452,6 +526,16 @@ export function OneSheetPanel() {
   )
   const nDrains = drains(cfg).length
   const chartCfg = tick ? tick.cfg : cfg
+
+  if (captureId) {
+    return (
+      <div className="capture">
+        <Canvas frameloop="never" camera={{ position: [0, cfg.sheetSize * 0.45, cfg.sheetSize * 1.1], fov: 40, near: 0.1, far: cfg.sheetSize * 12 }} dpr={1} gl={{ preserveDrawingBuffer: true }}>
+          <Scene cfg={cfg} anim={anim} onTick={setTick} sliceY={null} view="topside" capture={{ bus, preset }} />
+        </Canvas>
+      </div>
+    )
+  }
 
   return (
     <div className="layout">
@@ -472,7 +556,9 @@ export function OneSheetPanel() {
           <div className="btns">
             <button className={`btn${playing ? ' primary' : ''}`} onClick={togglePlay}>{playing ? 'pause' : 'play'}</button>
             <button className="btn" onClick={() => reset()}>reset</button>
+            <button className="btn" onClick={exportScene}>export scene JSON</button>
           </div>
+          {status && <p className="status">{status}</p>}
           <table className="readouts">
             <tbody>
               <tr><td>scale factor</td><td>{tick ? fmt(tick.scale, 3) : '1.000'}</td></tr>

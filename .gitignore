@@ -23,3 +23,7 @@ dist-ssr
 *.sln
 *.sw?
 .cache/
+.dual-graph/
+captures/
+shots/
+.playwright-mcp/

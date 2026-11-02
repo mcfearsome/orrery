@@ -75,3 +75,5 @@ code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); pa
 .masses input[type=number] { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 5px; font-family: var(--mono); font-size: 12px; }
 .masses .btn { padding: 2px 7px; }
 .masses tr.bh td:first-child input { border-color: var(--accent); }
+.capture { position: fixed; inset: 0; background: var(--bg); }
+.capture canvas { display: block; }

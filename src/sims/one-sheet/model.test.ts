@@ -95,5 +95,20 @@ describe('presets and expansion', () => {
     expect(nestedSheet(1, 0.5, 1)).toEqual({ scale: 0.5, y: 1 })
     expect(nestedSheet(2, 0.5, 1)).toEqual({ scale: 0.25, y: 1.5 })
     expect(OneSheetConfig.parse(PRESETS.cycle).cycleDepth).toBe(3)
+    expect(Object.keys(PRESETS)).toEqual(['sheet', 'drain', 'cosmic', 'cycle'])
+  })
+})
+
+import { sceneFromState } from './scene'
+
+describe('scene export', () => {
+  it('serialises a cosmic moment with matching series lengths and the anim readouts', () => {
+    const c = OneSheetConfig.parse(PRESETS.cosmic)
+    const s = sceneFromState(c, { scale: 1.5, pooled: 0.4, t: 0 }, 'cosmic')
+    expect(s.module).toBe('one-sheet')
+    for (const se of s.series) expect(se.x.length).toBe(se.y.length)
+    expect(s.readouts.n_drains).toBe(40)
+    expect(s.readouts.sheet_size).toBeCloseTo(90, 10)
+    expect(OneSheetConfig.parse(s.params)).toEqual(c)
   })
 })
