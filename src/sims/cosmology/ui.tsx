@@ -29,8 +29,11 @@ export function CosmologyPanel() {
   useEffect(() => {
     let alive = true
     // A host page may relocate the data: <meta name="orrery:data-base"> and <meta name="orrery:chol-file">.
+    // The base is resolved against the page here because inside the worker a relative URL would
+    // resolve against the worker script's own folder.
     const meta = (n: string) => document.querySelector<HTMLMetaElement>(`meta[name="${n}"]`)?.content || undefined
-    api.loadData(meta('orrery:data-base'), true, meta('orrery:chol-file')).then(async (r) => {
+    const dataBase = new URL(meta('orrery:data-base') ?? 'pantheon_plus', document.baseURI).href
+    api.loadData(dataBase, true, meta('orrery:chol-file')).then(async (r) => {
       if (!alive) return
       const s = await api.sampleSummary()
       if (!alive || !s) return
