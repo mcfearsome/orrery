@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { crossSection, heightAt, heightField, slopeAt } from './model'
+import { crossSection, drains, heightAt, heightField, slopeAt, undersideDensity } from './model'
 import { OneSheetConfig } from './schema'
 
-const one = (m = 2, softening = 0.5) => OneSheetConfig.parse({ masses: [{ x: 1, y: -1, m }], softening, exaggeration: 1 })
+// bhThreshold above every mass here so no ridge term enters the pure-well tests
+const one = (m = 2, softening = 0.5) => OneSheetConfig.parse({ masses: [{ x: 1, y: -1, m }], softening, exaggeration: 1, bhThreshold: 100 })
 
 describe('one-sheet height field', () => {
   it('is a softened well: deepest exactly at the mass, depth m/ε, and symmetric around it', () => {
@@ -30,7 +31,7 @@ describe('one-sheet height field', () => {
   })
 
   it('grid matches the point function and reports the extrema', () => {
-    const c = OneSheetConfig.parse({ masses: [{ x: 0, y: 0, m: 1 }], resolution: 33, sheetSize: 8, softening: 0.5 })
+    const c = OneSheetConfig.parse({ masses: [{ x: 0, y: 0, m: 1 }], resolution: 33, sheetSize: 8, softening: 0.5, bhThreshold: 100 })
     const f = heightField(c)
     expect(f.h.length).toBe(33 * 33)
     expect(f.h[16 * 33 + 16]).toBeCloseTo(-2, 5) // centre vertex sits on the mass
@@ -47,5 +48,19 @@ describe('one-sheet height field', () => {
     expect(s.x[240]).toBe(c.sheetSize / 2)
     for (const v of s.h) expect(v).toBeLessThanOrEqual(0)
     expect(Math.min(...s.h)).toBeCloseTo(-4, 4)
+  })
+
+  it('drains are the masses at or above the threshold, and pooled energy raises a ridge between two of them', () => {
+    const c = OneSheetConfig.parse({ masses: [{ x: -5, y: 0, m: 3 }, { x: 5, y: 0, m: 3 }, { x: 0, y: 6, m: 0.5 }], bhThreshold: 2, spread: 5, pooled: 1, ridge: 0.25, softening: 0.8 })
+    const ds = drains(c)
+    expect(ds.map((d) => d.x)).toEqual([-5, 5])
+    expect(ds[0].throat).toBeCloseTo(0.45 * 0.8, 10)
+    // the ring density peaks at `spread` from a drain and overlaps midway between the two
+    expect(undersideDensity(ds, 5, 0, 0)).toBeCloseTo(6, 6)
+    expect(undersideDensity(ds, 5, 0, 0)).toBeGreaterThan(undersideDensity(ds, 5, 0, 8))
+    // midway, the ridge term lifts the sheet relative to the same masses with nothing pooled
+    const flat = OneSheetConfig.parse({ ...c, pooled: 0 })
+    const mid = crossSection(c, 0, 101).h[50], midFlat = crossSection(flat, 0, 101).h[50]
+    expect(mid - midFlat).toBeCloseTo(0.25 * 6, 6)
   })
 })

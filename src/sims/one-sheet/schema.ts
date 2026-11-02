@@ -29,5 +29,19 @@ export const OneSheetConfig = z.object({
   exaggeration: z.number().min(0).max(20).default(1),
   /** how transparent the sheet becomes where it is stretched thin (|∇h| high); 0 = opaque everywhere */
   translucency: z.number().min(0).max(1).default(0.8),
+  /** masses at or above this are black holes: the sheet tears and drains topside → underside */
+  bhThreshold: z.number().positive().default(2),
+  /** throat radius of a drain, in units of the softening length */
+  throat: z.number().min(0.05).max(3).default(0.45),
+  /** drained particles per second per black hole */
+  leakRate: z.number().min(1).max(100000).default(800),
+  /** total GPU particles shared by all drains (1k–200k) */
+  particles: z.number().int().min(1000).max(200000).default(60000),
+  /** how far drained energy spreads on the underside before it pools (ring radius) */
+  spread: z.number().min(0.5).max(50).default(5),
+  /** 0–1: how much underside energy has pooled so far; scales the topside ridge */
+  pooled: z.number().min(0).max(1).default(0.5),
+  /** height of the topside ridge raised by a fully pooled drain, per unit black-hole mass */
+  ridge: z.number().min(0).max(5).default(0.25),
 })
 export type OneSheetConfig = z.infer<typeof OneSheetConfig>

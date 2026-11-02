@@ -32,6 +32,37 @@ export function slopeAt(masses: readonly PointMass[], softening: number, exagger
   return exaggeration * Math.hypot(gx, gy)
 }
 
+/** A black hole: a mass at or above the threshold, with its throat radius. */
+export interface Drain { x: number; y: number; m: number; throat: number }
+
+export function drains(cfg: OneSheetConfig): Drain[] {
+  return cfg.masses.filter((m) => m.m >= cfg.bhThreshold).map((m) => ({ x: m.x, y: m.y, m: m.m, throat: cfg.throat * cfg.softening }))
+}
+
+/**
+ * Underside energy pooled by the drains, as a smooth density on the sheet. Energy drains at a
+ * black hole, drifts outward on the underside and settles at about `spread` from it, so each drain
+ * contributes a ring (Gaussian in distance around radius `spread`, width spread/2) weighted by its
+ * mass. Rings from neighbouring galaxies overlap between them: that is where the pool is deepest.
+ */
+export function undersideDensity(ds: readonly Drain[], spread: number, x: number, y: number): number {
+  const w2 = 2 * (spread / 2) ** 2
+  let rho = 0
+  for (const d of ds) {
+    const r = Math.hypot(x - d.x, y - d.y) - spread
+    rho += d.m * Math.exp(-(r * r) / w2)
+  }
+  return rho
+}
+
+/**
+ * Pooled underside energy as it shows on the topside. Underside matter pulls the sheet toward the
+ * underside's own "down", which is our up, so the term is POSITIVE in h: a ridge between galaxies.
+ */
+export function ridgeAt(cfg: OneSheetConfig, ds: readonly Drain[], x: number, y: number): number {
+  return cfg.ridge * cfg.pooled * undersideDensity(ds, cfg.spread, x, y)
+}
+
 export interface HeightField {
   /** vertices per side */
   n: number
@@ -49,6 +80,7 @@ export interface HeightField {
 
 export function heightField(cfg: OneSheetConfig): HeightField {
   const { resolution: n, sheetSize: size, masses, softening, exaggeration } = cfg
+  const ds = drains(cfg)
   const h = new Float32Array(n * n)
   const slope = new Float32Array(n * n)
   const step = size / (n - 1)
@@ -57,7 +89,7 @@ export function heightField(cfg: OneSheetConfig): HeightField {
     const y = -size / 2 + j * step
     for (let i = 0; i < n; i++) {
       const x = -size / 2 + i * step
-      const v = heightAt(masses, softening, exaggeration, x, y)
+      const v = heightAt(masses, softening, exaggeration, x, y) + ridgeAt(cfg, ds, x, y)
       const s = slopeAt(masses, softening, exaggeration, x, y)
       h[j * n + i] = v
       slope[j * n + i] = s
@@ -68,13 +100,19 @@ export function heightField(cfg: OneSheetConfig): HeightField {
   return { n, size, h, slope, min, maxSlope }
 }
 
+/** Total sheet height at a point: wells from the masses plus the ridge from pooled underside energy. */
+export function totalHeightAt(cfg: OneSheetConfig, ds: readonly Drain[], x: number, y: number): number {
+  return heightAt(cfg.masses, cfg.softening, cfg.exaggeration, x, y) + ridgeAt(cfg, ds, x, y)
+}
+
 /** h along the line y = y0, sampled at `n` points across the sheet. Above the curve is topside, below is underside. */
 export function crossSection(cfg: OneSheetConfig, y0: number, n = 256): { x: number[]; h: number[] } {
+  const ds = drains(cfg)
   const x: number[] = [], h: number[] = []
   for (let i = 0; i < n; i++) {
     const xi = -cfg.sheetSize / 2 + (i * cfg.sheetSize) / (n - 1)
     x.push(xi)
-    h.push(heightAt(cfg.masses, cfg.softening, cfg.exaggeration, xi, y0))
+    h.push(totalHeightAt(cfg, ds, xi, y0))
   }
   return { x, h }
 }
