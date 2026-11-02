@@ -592,3 +592,38 @@ export function earlyUniverse(E: Expansion, H0: number, omegaM: number, omegaB: 
   const DMStar = comovingDistanceMpc(E, H0, zs) * k.DM
   return { zStar: zs, zDrag: zd, rsStar, rd, DMStar, R: (Math.sqrt(omegaM) * 100 * DMStar) / C_KM_S, lA: (Math.PI * DMStar) / rsStar }
 }
+
+// ---------------------------------------------------------------------------
+// w0wa (Chevallier–Polarski–Linder) dark energy, the parametrisation DESI uses.
+//   w(a) = w0 + wa (1 − a),  ρ_DE ∝ a^{−3(1+w0+wa)} exp(−3 wa (1 − a))
+// It is the comparison model for module 1.5: it can match the leak model's
+// expansion at z ≲ 1 but has a free second derivative where the leak's is fixed
+// by the black-hole growth history.
+// ---------------------------------------------------------------------------
+
+export interface CPLParams { H0: number; Om: number; Or: number; w0: number; wa: number }
+
+export function cplDensityRatio(z: number, w0: number, wa: number): number {
+  const a = 1 / (1 + z)
+  return a ** (-3 * (1 + w0 + wa)) * Math.exp(-3 * wa * (1 - a))
+}
+
+export function cplE(p: CPLParams): Expansion {
+  const Ode = 1 - p.Om - p.Or
+  return (z) => {
+    const a1 = 1 + z
+    return Math.sqrt(p.Or * a1 ** 4 + p.Om * a1 ** 3 + Ode * cplDensityRatio(z, p.w0, p.wa))
+  }
+}
+
+export function cplDistanceTable(p: CPLParams, zMax = 2.6): DistanceTable {
+  return buildDistanceTable(cplE(p), p.H0, 0, zMax)
+}
+
+/** Effective equation of state of the leak component from its density history: w = −1 − (1/3) d ln ρ / d ln a. */
+export function leakEffectiveW(hist: LeakHistory, z: number, dz = 1e-3): number {
+  const z2 = z + dz * (1 + z)
+  const r1 = leakOmegaAt(hist, z), r2 = leakOmegaAt(hist, z2)
+  if (r1 <= 0 || r2 <= 0) return NaN
+  return -1 + (Math.log(r2) - Math.log(r1)) / (3 * Math.log((1 + z2) / (1 + z)))
+}

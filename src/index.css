@@ -50,6 +50,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 .readouts td:first-child { text-align: left; color: var(--muted); }
 .lcdm { color: var(--lcdm); }
 .leak { color: var(--leak); }
+.cpl { color: #9d8cff; }
 .good { color: var(--good); }
 .bad { color: var(--bad); }
 .muted { color: var(--muted); }

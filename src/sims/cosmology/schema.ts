@@ -63,6 +63,14 @@ export const CosmologyConfig = z.object({
   omegaB: z.number().positive().default(0.02236),
   /** also vary Ωm (and H0 for ΛCDM) in the fits */
   fitDensities: z.boolean().default(true),
+  /** w0wa (CPL) comparison model, the parametrisation DESI uses */
+  cpl: z.object({
+    enabled: z.boolean().default(false),
+    w0: z.number().min(-3).max(1).default(-0.85),
+    wa: z.number().min(-5).max(3).default(-0.55),
+    Om: z.number().min(0.05).max(0.9).default(0.311),
+    H0: z.number().positive().default(67.6),
+  }).default(() => ({ enabled: false, w0: -0.85, wa: -0.55, Om: 0.311, H0: 67.6 })),
 })
 export type CosmologyConfig = z.infer<typeof CosmologyConfig>
 

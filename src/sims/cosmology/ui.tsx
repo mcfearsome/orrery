@@ -116,6 +116,15 @@ export function CosmologyPanel() {
     } finally { setFitting(false) }
   }
 
+  const runFitCpl = async () => {
+    setFitting(true)
+    try {
+      const r = await api.fitCpl(cfg)
+      setCfg((c) => ({ ...c, cpl: { ...c.cpl, enabled: true, Om: r.Om, H0: r.H0, w0: r.w0, wa: r.wa } }))
+      setStatus(`w0wa best fit: Ωm = ${r.Om.toFixed(4)}, H0 = ${r.H0.toFixed(2)}, w0 = ${r.w0.toFixed(3)}, wa = ${r.wa.toFixed(3)}, total χ² = ${r.chi2.toFixed(2)}`)
+    } catch (e) { setStatus(`w0wa fit error: ${String(e)}`) } finally { setFitting(false) }
+  }
+
   const runMcmc = async () => {
     setMcRunning(true); mcStop.current = false; setMc(null); setMcPlot(null)
     try {
@@ -243,6 +252,16 @@ export function CosmologyPanel() {
           <p className="note">ω_b fixed at {cfg.omegaB}. r_d, z*, z_d and D_M(z*) are the model's own integrals anchored to Planck 2018 ΛCDM at the fiducial.</p>
         </div>
         <div className="card">
+          <h2>w0wa comparison <span className="tag muted">the DESI parametrisation</span></h2>
+          <label className="check"><input type="checkbox" checked={cfg.cpl.enabled} onChange={(e) => setCfg((c) => ({ ...c, cpl: { ...c.cpl, enabled: e.target.checked } }))} />show w0wa (CPL) model</label>
+          <Slider label="w0" value={cfg.cpl.w0} min={-2} max={0} step={0.005} onChange={(v) => setCfg((c) => ({ ...c, cpl: { ...c.cpl, w0: v } }))} />
+          <Slider label="wa" value={cfg.cpl.wa} min={-3} max={2} step={0.01} onChange={(v) => setCfg((c) => ({ ...c, cpl: { ...c.cpl, wa: v } }))} />
+          <Slider label="Ωm" value={cfg.cpl.Om} min={0.05} max={0.9} step={0.001} onChange={(v) => setCfg((c) => ({ ...c, cpl: { ...c.cpl, Om: v } }))} />
+          <Slider label="H0" value={cfg.cpl.H0} min={50} max={90} step={0.1} onChange={(v) => setCfg((c) => ({ ...c, cpl: { ...c.cpl, H0: v } }))} />
+          <div className="btns"><button className="btn" disabled={!data || fitting} onClick={runFitCpl}>Fit w0wa (Ωm, H0, w0, wa)</button></div>
+          <p className="note">w(a) = w0 + wa(1 − a). Matches the leak at z ≲ 1 but has a free second derivative where the leak's is fixed by the black-hole history.</p>
+        </div>
+        <div className="card">
           <h2>Posterior (MCMC) <span className="tag muted">ensemble sampler, flat priors</span></h2>
           <div className="row"><label>walkers</label><input type="number" min={8} max={128} step={2} value={mcOpts.nWalkers} onChange={(e) => setMcOpts((o) => ({ ...o, nWalkers: Number(e.target.value) }))} /><span className="unit" /></div>
           <div className="row"><label>steps</label><input type="number" min={50} max={5000} step={50} value={mcOpts.steps} onChange={(e) => setMcOpts((o) => ({ ...o, steps: Number(e.target.value) }))} /><span className="unit" /></div>
@@ -282,6 +301,8 @@ export function CosmologyPanel() {
               <tr><td>Ω_DE today</td><td>{ev ? fmt(ev.omegaLambda) : '—'}</td><td>{ev ? fmt(ev.omegaLeak0Frac) : '—'}</td></tr>
               <tr><td>Ωm today</td><td>{fmt(cfg.lcdm.Om)}</td><td>{ev ? fmt(ev.omegaMFrac) : '—'}</td></tr>
               <tr><td>α, β, γ</td><td /><td>{lp.alpha.toExponential(2)}, {fmt(lp.beta, 2)}, {fmt(lp.gamma, 2)}</td></tr>
+              {ev?.cpl && <tr><td className="cpl">w0wa: χ² SN · CMB · BAO</td><td colSpan={2}>{fmt(ev.cpl.chi2.chi2, 2)} · {fmt(ev.cpl.priors.chi2CMB, 2)} · {fmt(ev.cpl.priors.chi2BAO, 2)}</td></tr>}
+              {ev?.cpl && <tr><td className="cpl">w0wa: total · Δ vs ΛCDM · Δ leak − w0wa</td><td colSpan={2}>{fmt(ev.cpl.total, 2)} · {fmt(ev.cpl.total - ev.totalLcdm, 2)} · {fmt(ev.totalLeak - ev.cpl.total, 2)}</td></tr>}
             </tbody>
           </table>
           {lastFit && <p className="note">last fit: χ² {fmt(lastFit.chi2, 2)} in {lastFit.iterations} iterations{lastFit.converged ? '' : ' (hit limit)'}</p>}
@@ -295,6 +316,7 @@ export function CosmologyPanel() {
         <HubbleDiagram data={data} ev={ev} cfg={cfg} />
         <ResidualPanel data={data} ev={ev} />
         <BAOPanel ev={ev} />
+        <EquationOfStatePanel ev={ev} />
         {mcPlot && <PosteriorPanel plot={mcPlot} />}
         <DensityPanel ev={ev} cfgHistory={cfg.leak.bhHistory} />
       </main>
@@ -318,7 +340,7 @@ function Legend({ items }: { items: { color: string; label: string; dash?: boole
   return <div className="legend">{items.map((it) => <span key={it.label}><span className="sw" style={{ background: it.color, opacity: it.dash ? 0.6 : 1 }} />{it.label}</span>)}</div>
 }
 
-const COL = { lcdm: '#66c2ff', leak: '#ff7a90', data: '#b8c0d0', accent: '#e8b864' }
+const COL = { lcdm: '#66c2ff', leak: '#ff7a90', data: '#b8c0d0', accent: '#e8b864', cpl: '#9d8cff' }
 
 function HubbleDiagram({ data, ev, cfg }: { data: Data | null; ev: Evaluation | null; cfg: CosmologyConfig }) {
   const fr = defaultFrame(900, 380)
@@ -334,6 +356,7 @@ function HubbleDiagram({ data, ev, cfg }: { data: Data | null; ev: Evaluation | 
           {data && <ErrorPoints xs={data.z} ys={data.mu} es={data.muErr} x={x} y={y} color={COL.data} />}
           {ev && <Line xs={ev.zGrid} ys={ev.lcdm.map((m) => m + ev.chi2Lcdm.deltaM)} x={x} y={y} color={COL.lcdm} />}
           {ev && <Line xs={ev.zGrid} ys={ev.leak.map((m) => m + ev.chi2Leak.deltaM)} x={x} y={y} color={COL.leak} dash="6 4" />}
+          {ev?.cpl && <Line xs={ev.zGrid} ys={ev.cpl.mu.map((m) => m + ev.cpl!.chi2.deltaM)} x={x} y={y} color={COL.cpl} width={1.5} dash="2 3" />}
         </g>
       </Chart>
     </div>
@@ -415,13 +438,14 @@ function BAOPanel({ ev }: { ev: Evaluation | null }) {
   return (
     <div className="card">
       <h2>BAO vs DESI DR2 <span className="tag muted">D_M/r_d and D_H/r_d; r_d is each model's own sound horizon</span></h2>
-      <Legend items={[{ color: COL.data, label: 'DESI DR2 (7 bins)' }, { color: COL.lcdm, label: 'ΛCDM' }, { color: COL.leak, label: 'leak model' }]} />
+      <Legend items={[{ color: COL.data, label: 'DESI DR2 (7 bins)' }, { color: COL.lcdm, label: 'ΛCDM' }, { color: COL.leak, label: 'leak model' }, ...(ev?.cpl ? [{ color: COL.cpl, label: 'w0wa' }] : [])]} />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12 }}>
         <Chart fr={fr} title="D_M over r_d">
           <Axes fr={fr} x={x} y={yM} xLabel="z" yLabel="D_M / r_d" />
           <g clipPath={clipId(fr)}>
             {ev && <Line xs={ev.baoGrid} ys={ev.baoCurveLcdm.DM} x={x} y={yM} color={COL.lcdm} />}
             {ev && <Line xs={ev.baoGrid} ys={ev.baoCurveLeak.DM} x={x} y={yM} color={COL.leak} dash="6 4" />}
+            {ev?.cpl && <Line xs={ev.baoGrid} ys={ev.cpl.baoCurve.DM} x={x} y={yM} color={COL.cpl} width={1.5} dash="2 3" />}
             <ErrorPoints xs={pts.map((p) => p.z)} ys={pts.map((p) => p.DM![0])} es={pts.map((p) => p.DM![1])} x={x} y={yM} color={COL.data} r={3} opacity={1} />
           </g>
         </Chart>
@@ -430,6 +454,7 @@ function BAOPanel({ ev }: { ev: Evaluation | null }) {
           <g clipPath={clipId(fr)}>
             {ev && <Line xs={ev.baoGrid} ys={ev.baoCurveLcdm.DH} x={x} y={yH} color={COL.lcdm} />}
             {ev && <Line xs={ev.baoGrid} ys={ev.baoCurveLeak.DH} x={x} y={yH} color={COL.leak} dash="6 4" />}
+            {ev?.cpl && <Line xs={ev.baoGrid} ys={ev.cpl.baoCurve.DH} x={x} y={yH} color={COL.cpl} width={1.5} dash="2 3" />}
             <ErrorPoints xs={pts.map((p) => p.z)} ys={pts.map((p) => p.DH![0])} es={pts.map((p) => p.DH![1])} x={x} y={yH} color={COL.data} r={3} opacity={1} />
           </g>
         </Chart>
@@ -481,6 +506,41 @@ function PosteriorPanel({ plot }: { plot: { names: string[]; points: number[][];
           })()}
         </Chart>
       </div>
+    </div>
+  )
+}
+
+function EquationOfStatePanel({ ev }: { ev: Evaluation | null }) {
+  const fr = { w: 440, h: 250, l: 56, r: 12, t: 14, b: 36 }
+  const x = useMemo(() => linearScale(0, 2.6, fr.l, fr.w - fr.r, 5), [fr.l, fr.w, fr.r])
+  const yW = useMemo(() => linearScale(-2.2, -0.4, fr.h - fr.b, fr.t, 5), [fr.h, fr.b, fr.t])
+  const yF = useMemo(() => linearScale(0, 1.3, fr.h - fr.b, fr.t, 5), [fr.h, fr.b, fr.t])
+  const zs = ev?.zGrid ?? []
+  return (
+    <div className="card">
+      <h2>Dark-energy equation of state and density <span className="tag muted">where the models differ: w(z) and ρ_DE(z)/ρ_DE(0); shaded = beyond the supernova range</span></h2>
+      <Legend items={[{ color: COL.lcdm, label: 'Λ (w = −1, constant)' }, { color: COL.leak, label: 'leak: w_eff(z), fixed by the BH history' }, ...(ev?.cpl ? [{ color: COL.cpl, label: 'w0wa' }] : [])]} />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12 }}>
+        <Chart fr={fr} title="w of z">
+          <Axes fr={fr} x={x} y={yW} xLabel="z" yLabel="w(z)" />
+          <g clipPath={clipId(fr)}>
+            <rect x={x(2.3)} y={fr.t} width={x(2.6) - x(2.3)} height={fr.h - fr.t - fr.b} fill="#ffffff" opacity={0.04} />
+            <line x1={fr.l} x2={fr.w - fr.r} y1={yW(-1)} y2={yW(-1)} stroke={COL.lcdm} strokeWidth={1.5} />
+            {ev && <Line xs={zs} ys={ev.leakW} x={x} y={yW} color={COL.leak} />}
+            {ev?.cpl && <Line xs={zs} ys={ev.cpl.w} x={x} y={yW} color={COL.cpl} width={1.5} dash="2 3" />}
+          </g>
+        </Chart>
+        <Chart fr={fr} title="dark energy density ratio">
+          <Axes fr={fr} x={x} y={yF} xLabel="z" yLabel="ρ_DE(z) / ρ_DE(0)" />
+          <g clipPath={clipId(fr)}>
+            <rect x={x(2.3)} y={fr.t} width={x(2.6) - x(2.3)} height={fr.h - fr.t - fr.b} fill="#ffffff" opacity={0.04} />
+            <line x1={fr.l} x2={fr.w - fr.r} y1={yF(1)} y2={yF(1)} stroke={COL.lcdm} strokeWidth={1.5} />
+            {ev && <Line xs={zs} ys={ev.leakFDE} x={x} y={yF} color={COL.leak} />}
+            {ev?.cpl && <Line xs={zs} ys={ev.cpl.fDE} x={x} y={yF} color={COL.cpl} width={1.5} dash="2 3" />}
+          </g>
+        </Chart>
+      </div>
+      <p className="note">The leak's w(z) has no free shape: once α and γ are fitted, its curvature follows the SMBH growth rate. w0wa can match it below z ≈ 1 and diverges above, but dark energy is subdominant there, so the two differ by under 1% in D_H/r_d (module 1.5 card).</p>
     </div>
   )
 }

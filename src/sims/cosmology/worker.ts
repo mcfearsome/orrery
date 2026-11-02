@@ -8,6 +8,9 @@ import {
   baoPredict,
   chi2Gaussian2,
   chi2Marginalised,
+  cplDensityRatio,
+  cplDistanceTable,
+  cplE,
   distanceModulus,
   earlyUniverse,
   integrateLeak,
@@ -16,6 +19,7 @@ import {
   lcdmLambda,
   leakDistanceTable,
   leakE,
+  leakEffectiveW,
   leakOmegaAt,
   modelMu,
   nelderMead,
@@ -102,6 +106,21 @@ export interface Evaluation {
   /** total χ² = SN + enabled priors */
   totalLcdm: number
   totalLeak: number
+  /** w0wa comparison (present when cfg.cpl.enabled) */
+  cpl: null | {
+    mu: number[]
+    muAtData: number[]
+    chi2: Chi2Result
+    priors: PriorScore
+    total: number
+    baoCurve: { DM: number[]; DH: number[] }
+    /** w(z) and ρ_DE(z)/ρ_DE(0) on zGrid */
+    w: number[]
+    fDE: number[]
+  }
+  /** leak effective w(z) and ρ_leak(z)/ρ_leak(0) on zGrid */
+  leakW: number[]
+  leakFDE: number[]
 }
 
 export interface PriorScore {
@@ -142,6 +161,19 @@ function scoreLcdm(cfg: CosmologyConfig, s: SNSample) {
   const sn = snChi2(s, modelMu(t, s), cfg.fullCovariance)
   const ps = scorePriors(lcdmE(cfg.lcdm), cfg.lcdm.H0, omegaMOf(cfg.lcdm.Om, cfg.lcdm.H0), cfg.omegaB, t)
   return { sn, ps, total: totalWithPriors(cfg, sn.chi2, ps) }
+}
+
+function cplParams(cfg: CosmologyConfig) {
+  return { H0: cfg.cpl.H0, Om: cfg.cpl.Om, Or: omegaRadiation(cfg.cpl.H0), w0: cfg.cpl.w0, wa: cfg.cpl.wa }
+}
+
+function scoreCpl(cfg: CosmologyConfig, s: SNSample) {
+  const p = cplParams(cfg)
+  const E = cplE(p)
+  const t = cplDistanceTable(p)
+  const sn = snChi2(s, modelMu(t, s), cfg.fullCovariance)
+  const ps = scorePriors(E, p.H0, omegaMOf(p.Om, p.H0), cfg.omegaB, t)
+  return { sn, ps, total: totalWithPriors(cfg, sn.chi2, ps), E, t, p }
 }
 
 function scoreLeak(cfg: CosmologyConfig, s: SNSample) {
@@ -239,7 +271,35 @@ const api = {
       baoCurveLeak: curve(E, cfg.leak.H0, priorsLeak.early.rd),
       totalLcdm: totalWithPriors(cfg, chi2Lcdm.chi2, priorsLcdm),
       totalLeak: totalWithPriors(cfg, chi2Leak.chi2, priorsLeak),
+      cpl: cfg.cpl.enabled ? (() => {
+        const c = scoreCpl(cfg, sample)
+        return {
+          mu: zs.map((z) => distanceModulus(c.t, z)),
+          muAtData: Array.from(modelMu(c.t, sample)),
+          chi2: c.sn,
+          priors: c.ps,
+          total: c.total,
+          baoCurve: curve(c.E, c.p.H0, c.ps.early.rd),
+          w: zs.map((z) => c.p.w0 + c.p.wa * z / (1 + z)),
+          fDE: zs.map((z) => cplDensityRatio(z, c.p.w0, c.p.wa)),
+        }
+      })() : null,
+      leakW: zs.map((z) => leakEffectiveW(hist, z)),
+      leakFDE: zs.map((z) => (hist.omega0 > 0 ? leakOmegaAt(hist, z) / hist.omega0 : NaN)),
     }
+  },
+
+  /** Fit the w0wa model (Ωm, H0, w0, wa) to the same data; several starts because wa is weakly constrained. */
+  fitCpl(rawConfig: unknown) {
+    const cfg = withRadiation(CosmologyConfig.parse(rawConfig))
+    const s = sampleFor(cfg)
+    const f = ([Om, H0, w0, wa]: number[]) => scoreCpl({ ...cfg, cpl: { ...cfg.cpl, Om, H0, w0, wa } }, s).total
+    let best: ReturnType<typeof nelderMead> | null = null
+    for (const x0 of [[cfg.cpl.Om, cfg.cpl.H0, cfg.cpl.w0, cfg.cpl.wa], [0.3, 68, -1, 0], [0.32, 67, -0.7, -1.2]]) {
+      const r = nelderMead(f, x0, { bounds: [[0.1, 0.6], [50, 90], [-2, 0], [-4, 2]], initialStep: [0.02, 1, 0.1, 0.3], tolF: 1e-8, tolX: 1e-5, maxIter: 3000 })
+      if (!best || r.f < best.f) best = r
+    }
+    return { Om: best!.x[0], H0: best!.x[1], w0: best!.x[2], wa: best!.x[3], chi2: best!.f }
   },
 
   /** Minimise the leak model's total χ² over (α, β, γ) and, with fitDensities, Ωm. Reports progress through the callback. */

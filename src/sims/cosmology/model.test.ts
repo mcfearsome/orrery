@@ -111,3 +111,14 @@ describe('Nelder–Mead', () => {
     expect(r.x[0]).toBeCloseTo(1, 3)
   })
 })
+
+describe('w0wa (CPL)', () => {
+  it('reduces to ΛCDM at w0 = −1, wa = 0', async () => {
+    const { cplDistanceTable, cplDensityRatio } = await import('./model')
+    const t = cplDistanceTable({ H0: 67.4, Om: 0.315, Or: 0, w0: -1, wa: 0 })
+    const l = lcdmDistanceTable(LCDMParams.parse({}))
+    for (const z of [0.3, 1, 2]) expect(distanceModulus(t, z)).toBeCloseTo(distanceModulus(l, z), 8)
+    expect(cplDensityRatio(1.5, -1, 0)).toBeCloseTo(1, 12)
+    expect(cplDensityRatio(1, 0, 0)).toBeCloseTo(8, 10) // w = 0 dilutes like matter: (1+z)^3
+  })
+})
