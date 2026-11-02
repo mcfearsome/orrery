@@ -125,6 +125,16 @@ export function bhHistory(id: BHHistoryId = 'sfr_proxy'): BHHistory {
 // ---------------------------------------------------------------------------
 // Leak law. ONE pure function; swap it to try another law.
 //
+// Interpretation (Jesse, 2026-11-02, one-sheet picture): black holes DRAIN
+// energy from our side to the underside of the same sheet; nothing comes up
+// except at a big bang. ρ_leak is therefore not energy added to our side but
+// the mirror of mass accumulating underneath: it enters our Friedmann equation
+// as a repulsive (negative-energy-like) term. The phenomenology fitted here is
+// unchanged (a component sourced by SMBH growth, diluting as (1+z)^γ), but
+// γ should be read as "how underside matter dilutes", and the net loss of
+// energy on our side is compensated by curvature, which is the point a
+// physicist will press on.
+//
 // Physical statement:  dρ_leak/dt = α · ṁ_BH(t) · (1+z)^β − γ H ρ_leak
 // where ṁ_BH is the PHYSICAL BH mass-formation rate density, i.e. the comoving
 // formation rate times (1+z)^3, and the −γHρ term makes ρ_leak dilute as (1+z)^γ.
