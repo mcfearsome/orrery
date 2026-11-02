@@ -25,8 +25,8 @@ export function sampleFromJson(j: SNEJson, chol: ArrayBuffer | null): SNSample {
   }
 }
 
-/** Fetch the Pantheon+ files served from data/pantheon_plus (Vite publicDir = data). */
-export async function fetchPantheonPlus(base = '/pantheon_plus', withCovariance = true): Promise<SNSample> {
+/** Fetch the Pantheon+ files served from data/pantheon_plus (Vite publicDir = data); path is relative to the page. */
+export async function fetchPantheonPlus(base = 'pantheon_plus', withCovariance = true): Promise<SNSample> {
   const [j, chol] = await Promise.all([
     fetch(`${base}/sne.json`).then((r) => { if (!r.ok) throw new Error(`sne.json: ${r.status}`); return r.json() as Promise<SNEJson> }),
     withCovariance

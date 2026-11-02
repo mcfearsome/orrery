@@ -5,6 +5,8 @@ import { defineConfig } from 'vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  // relative asset paths so the built app also runs when hosted under a sub-path
+  base: './',
   // Datasets live in data/ (with their READMEs) and are served from the site root.
   publicDir: 'data',
   worker: { format: 'es' },
