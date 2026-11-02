@@ -114,13 +114,16 @@ export function CosmologyPanel() {
       notes: 'ΔM is the analytically marginalised magnitude offset; curves are shifted by it to overlay the data. Full STAT+SYS covariance unless params.fullCovariance is false.',
       createdAt: new Date().toISOString(),
     })
-    const blob = new Blob([JSON.stringify(scene, null, 2)], { type: 'application/json' })
+    const json = JSON.stringify(scene, null, 2)
+    // Copy first (works in sandboxed viewers that block downloads), then offer the file.
+    const copied = navigator.clipboard?.writeText(json).then(() => true, () => false) ?? Promise.resolve(false)
+    const blob = new Blob([json], { type: 'application/json' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
     a.download = `${scene.id}.json`
     a.click()
     URL.revokeObjectURL(a.href)
-    setStatus(`exported ${scene.id}.json (${scene.series.length} series)`)
+    void copied.then((ok) => setStatus(`exported ${scene.id}.json (${scene.series.length} series, ${Math.round(json.length / 1024)} KB)${ok ? ', copied to clipboard' : ''}`))
   }
 
   const lp = cfg.leak.leak
